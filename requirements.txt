@@ -4,5 +4,5 @@ numpy
 pandas
 scapy
 joblib
-scikit-learn
+scikit-learn==1.6.0
 requests
