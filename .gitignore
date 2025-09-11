@@ -43,12 +43,12 @@ logs/*
 !logs/.gitkeep
 
 # Model and data files
-models/*.h5
-models/*.pkl
-!models/.gitkeep
-data/whitelist.txt
-data/blacklist.txt
-!data/.gitkeep
+# models/*.h5
+# models/*.pkl
+# !models/.gitkeep
+# data/whitelist.txt
+# data/blacklist.txt
+# !data/.gitkeep
 
 # Credentials and sensitive info
 *.pem
