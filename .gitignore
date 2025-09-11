@@ -37,7 +37,7 @@ ENV/
 *~
 
 # Project specific
-#config.ini
+config.ini
 logs/*.log
 logs/*
 !logs/.gitkeep
