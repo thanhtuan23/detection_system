@@ -1,0 +1,80 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+.~*
+*~
+
+# Project specific
+config.ini
+logs/*.log
+logs/*
+!logs/.gitkeep
+
+# Model and data files
+models/*.h5
+models/*.pkl
+!models/.gitkeep
+data/whitelist.txt
+data/blacklist.txt
+!data/.gitkeep
+
+# Credentials and sensitive info
+*.pem
+*.key
+*.cer
+*.crt
+
+# Flask session files
+flask_session/
+
+# Jupyter notebooks
+.ipynb_checkpoints
+*.ipynb
+
+# Temporary files
+*.tmp
+tmp/
+temp/
+
+# Test files
+.coverage
+htmlcov/
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+
+# Backup files
+*.bak

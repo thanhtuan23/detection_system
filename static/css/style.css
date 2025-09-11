@@ -1,0 +1,54 @@
+/* Custom CSS for Realtime IDS */
+
+.log-container {
+    max-height: 500px;
+    overflow-y: auto;
+    background-color: #f8f9fa;
+    border-radius: 4px;
+    border: 1px solid #dee2e6;
+}
+
+.log-pre {
+    padding: 15px;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
+.card {
+    margin-bottom: 20px;
+    box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+}
+
+.alert-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 1050;
+    width: 350px;
+}
+
+.alert-item {
+    margin-bottom: 10px;
+    opacity: 0.9;
+}
+
+.badge-attack {
+    background-color: #dc3545;
+    color: white;
+}
+
+.badge-port-scan {
+    background-color: #fd7e14;
+    color: white;
+}
+
+.badge-blacklist {
+    background-color: #6610f2;
+    color: white;
+}
+
+.badge-dos {
+    background-color: #dc3545;
+    color: white;
+}
