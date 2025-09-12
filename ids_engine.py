@@ -223,6 +223,7 @@ class IDSEngine:
         # Filtering config
         self.whitelist_file = config.get('Filtering', 'whitelist_file')
         self.blacklist_file = config.get('Filtering', 'blacklist_file')
+        self.ignore_https = config.getboolean('Filtering', 'ignore_https', fallback=False)
         
         # Thiết lập logging
         self.attack_logger = setup_logging()
@@ -360,14 +361,38 @@ class IDSEngine:
         
         # Nếu là HTTPS (cổng 443)
         if dport == 443 or sport == 443:
-            # Nếu thời lượng kết nối ngắn (< 10s) và lưu lượng trong mức hợp lý
-            if (state.last_ts - state.first_ts < 10 and 
-                state.src_bytes < 50000 and state.dst_bytes < 500000):
-                # Kiểm tra các yếu tố khác của kết nối web thông thường
-                if "SF" in state.flag_counts or "S0" in state.flag_counts:
-                    # Tính tỉ lệ byte gửi/nhận, kết nối web thường nhận nhiều hơn gửi
-                    if state.dst_bytes > 0 and state.src_bytes / state.dst_bytes < 0.5:
+            # Kiểm tra nếu địa chỉ IP thuộc các dải IP của Google, Cloudflare, v.v.
+            google_ranges = ['74.125.', '142.250.', '64.233.', '216.58.', '172.217.']
+            cloudflare_ranges = ['104.18.', '104.19.', '104.20.', '172.65.', '146.75.']
+            
+            for ip in [sip, dip]:
+                for prefix in google_ranges:
+                    if ip.startswith(prefix):
                         return True
+                for prefix in cloudflare_ranges:
+                    if ip.startswith(prefix):
+                        return True
+            
+            # Kiểm tra thêm các mẫu lưu lượng HTTPS thông thường
+            # Lưu lượng web thường có các đặc điểm:
+            # 1. Thời lượng kết nối hợp lý
+            # 2. Tỷ lệ gửi/nhận hợp lý (nhận nhiều hơn gửi)
+            if (state.last_ts - state.first_ts < 15 and  # Thời lượng dưới 15s
+                state.src_bytes < 100000 and             # Dưới 100KB gửi
+                state.dst_bytes < 1000000):              # Dưới 1MB nhận
+                
+                # Kiểm tra các flag thông thường của web browsing
+                if "SF" in state.flag_counts or "S0" in state.flag_counts:
+                    # Đặc điểm truyền dữ liệu: client gửi ít, server gửi nhiều
+                    if state.src_bytes == 0 or (state.dst_bytes > 0 and state.src_bytes / state.dst_bytes < 0.2):
+                        return True
+                        
+            # Xử lý riêng cho các kết nối TLS keep-alive
+            if (state.pkt_src + state.pkt_dst < 10 and  # Số lượng gói tin nhỏ
+                state.src_bytes < 1000 and             # Lưu lượng nhỏ
+                state.dst_bytes < 1000):
+                return True
+                
         return False
 
     def _check_port_scan(self, pkt):
@@ -385,6 +410,14 @@ class IDSEngine:
         dst_ip = pkt[IP].dst
         dst_port = pkt[TCP].dport
         
+        # Bỏ qua nếu src_ip là IP tin cậy
+        google_ranges = ['74.125.', '142.250.', '64.233.', '216.58.', '172.217.']
+        cloudflare_ranges = ['104.18.', '104.19.', '104.20.', '172.65.', '146.75.']
+        
+        for prefix in google_ranges + cloudflare_ranges:
+            if src_ip.startswith(prefix):
+                return False
+        
         # Chỉ quan tâm đến các gói SYN (dấu hiệu quét cổng)
         if pkt[TCP].flags & 0x02:  # SYN flag
             if src_ip not in self.port_scan_window:
@@ -393,8 +426,8 @@ class IDSEngine:
             # Đếm số lượng cổng đích khác nhau
             self.port_scan_window[src_ip][dst_port] += 1
             
-            # Nếu số lượng cổng đích vượt ngưỡng, coi là quét cổng
-            if len(self.port_scan_window[src_ip]) > self.port_scan_threshold:
+            # Tăng ngưỡng lên 15 (thay vì 10) để giảm cảnh báo giả
+            if len(self.port_scan_window[src_ip]) > 15:
                 port_list = list(self.port_scan_window[src_ip].keys())
                 alert_msg = f"PORT SCAN DETECTED from {src_ip} to {dst_ip} (ports: {port_list[:5]}...)"
                 now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
@@ -424,7 +457,15 @@ class IDSEngine:
         """Kiểm tra xem gói tin có nên được xử lý hay không (lọc DNS/QUIC và lưu lượng nhỏ)"""
         if not pkt.haslayer(IP):
             return False
-            
+
+        # Kiểm tra cấu hình bỏ qua HTTPS
+        if hasattr(self, 'ignore_https') and self.ignore_https:
+            if pkt.haslayer(TCP):
+                dport = pkt[TCP].dport
+                sport = pkt[TCP].sport
+                if dport == 443 or sport == 443:
+                    return False
+                
         # Kiểm tra quét cổng
         if self._check_port_scan(pkt):
             return False  # Đã xử lý ở hàm _check_port_scan
@@ -496,7 +537,7 @@ class IDSEngine:
                 elapsed = now - self.stats["last_update_time"]
                 if elapsed > 0:
                     self.stats["packets_per_second"] = int(self.stats["packets_processed"] / 
-                                                         (now - self.stats["start_time"]))
+                                                        (now - self.stats["start_time"]))
                 self.stats["last_update_time"] = now
             
             if not self._should_process_pkt(pkt):
@@ -511,8 +552,13 @@ class IDSEngine:
                 state.update(pkt, direction)
                 self._update_host_window(pkt)
         except Exception as e:
-            # tránh crash callback
-            print(f"CB error: {e}")
+            # Bắt lỗi chi tiết hơn và tránh in thông báo lỗi cho những vấn đề đơn giản
+            if isinstance(e, (AttributeError, IndexError)) and 'sport' in str(e):
+                # Lỗi thường gặp khi gói tin không có trường sport/dport - bỏ qua im lặng
+                pass
+            else:
+                # Ghi log lỗi quan trọng
+                print(f"CB error: {str(e)}")
 
     def _post_process_alert(self, key, prob, state):
         """
@@ -549,9 +595,9 @@ class IDSEngine:
             self.previous_alerts[flow_id] = (1, now)
             
         # Kiểm tra ngoại lệ cho HTTPS với các website phổ biến
-        if dport == 443 and prob < 0.9:
-            # Áp dụng ngưỡng cao hơn cho HTTPS để giảm cảnh báo sai
-            return False
+        if dport == 443 or sport == 443:
+            # Tăng ngưỡng cảnh báo cho HTTPS lên cao hơn (0.95 thay vì 0.9)
+            return prob > 0.95
             
         # Kiểm tra kết nối nội bộ
         if is_private_ip(sip) and is_private_ip(dip):

@@ -1,5 +1,27 @@
-google.com
-microsoft.com
-github.com
-apple.com
-cloudflare.com
+# Google
+74.125.130.103
+74.125.130.99
+74.125.68.91
+142.250.4.94
+142.250.4.139
+64.233.170.94
+*.1e100.net
+*.google.com
+*.googleapis.com
+*.gstatic.com
+*.ggpht.com
+
+# Cloudflare
+104.18.4.159
+104.18.5.159
+146.75.121.91
+146.75.122.49
+172.65.251.78
+*.cloudflare.com
+*.cloudflare-dns.com
+
+# Khac 
+34.120.158.37
+151.101.129.91
+*.adguard-dns.com
+94.140.*.*

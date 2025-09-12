@@ -165,6 +165,7 @@ def get_log():
 @app.route('/api/settings', methods=['POST'])
 @login_required
 def save_settings():
+    global ids, notifier  # Thêm khai báo global
     settings = request.json
     
     # Đọc cấu hình hiện tại
@@ -189,14 +190,18 @@ def save_settings():
         config.write(f)
         
     # Khởi động lại các dịch vụ nếu đang chạy
+    was_running = False
     if ids.running:
+        was_running = True
         ids.stop()
-        ids = get_ids_instance('config.ini')
-        ids.start()
         
-    if notifier.running:
-        notifier.stop()
-        notifier = get_notifier_instance('config.ini')
+    # Tạo lại instances với cấu hình mới
+    ids = get_ids_instance('config.ini')
+    notifier = get_notifier_instance('config.ini')
+    
+    # Khởi động lại nếu trước đó đang chạy
+    if was_running:
+        ids.start()
         notifier.start()
         
     return jsonify({'success': True})
