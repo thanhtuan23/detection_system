@@ -28,7 +28,7 @@ class Notifier:
         self.email_sender = self.config.get('Notification', 'email_sender', fallback='')
         self.email_password = self.config.get('Notification', 'email_password', fallback='')
         self.email_recipient = self.config.get('Notification', 'email_recipient', fallback='')
-        self.email_interval = self.config.getint('Notification', 'email_interval', fallback=300)
+        self.email_interval = self.config.getint('Notification', 'email_interval', fallback=300) 
         
         # Cấu hình Telegram
         self.enable_telegram = self.config.getboolean('Notification', 'enable_telegram', fallback=False)

@@ -654,7 +654,16 @@ class IDSEngine:
                 for i, (k, p, pr, st) in enumerate(zip(keys, preds, probs, states)):
                     if p == 1 and self._post_process_alert(k, pr, st):
                         sip, sport, dip, dport, proto = k
-                        attack_type = "DoS" if (st.rate_src > 500000 or st.rate_dst > 500000) else "Attack"
+                        duration = max(0.1, st.last_ts - st.first_ts)
+                        pkt_rate = (st.pkt_src + st.pkt_dst) / duration
+                        if (st.rate_src > 500000 or st.rate_dst > 500000 or pkt_rate > 100):
+                            # Phân loại chi tiết hơn các loại DoS
+                            if "S0" in st.flag_counts and st.flag_counts["S0"] > 5:
+                                attack_type = "SYN_Flood"
+                            else:
+                                attack_type = "DoS"
+                        else:
+                            attack_type = "Attack"
                         alert_msg = f"ALERT {attack_type} proto={proto} {sip}:{sport} -> {dip}:{dport} prob={pr:.3f} window={self.window}s"
                         print(f"[{now}] {alert_msg}")
                         
