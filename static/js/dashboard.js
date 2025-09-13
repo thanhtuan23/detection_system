@@ -109,8 +109,25 @@ document.addEventListener('DOMContentLoaded', function() {
                     // Type column with badge
                     const typeCell = document.createElement('td');
                     const typeBadge = document.createElement('span');
-                    typeBadge.className = `badge badge-${alert.type}`;
-                    typeBadge.textContent = alert.type.toUpperCase();
+
+                    // Đảm bảo tất cả loại tấn công đều có định dạng lowercase và gạch dưới nhất quán
+                    let badgeType = alert.type.toLowerCase().replace(/\s+/g, '_');
+
+                    // Kiểm tra xem có class CSS tương ứng không, nếu không thì dùng 'attack'
+                    const validTypes = [
+                        'attack', 'dos', 'syn_flood', 'port_scan', 'brute_force', 
+                        'web_attack', 'blacklist', 'rst_flood', 'fin_flood', 
+                        'http_flood', 'udp_flood'
+                    ];
+
+                    if (!validTypes.includes(badgeType)) {
+                        badgeType = 'attack'; // Mặc định nếu không có class tương ứng
+                    }
+
+                    typeBadge.className = `badge badge-${badgeType}`;
+
+                    // Hiển thị tên loại tấn công với định dạng đẹp
+                    typeBadge.textContent = alert.type.toUpperCase().replace(/_/g, ' ');
                     typeCell.appendChild(typeBadge);
                     
                     // Source column
@@ -152,7 +169,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     row.appendChild(sourceCell);
                     row.appendChild(destCell);
                     row.appendChild(protoCell);
-                    row.appendChild(probCell);
+                    // row.appendChild(probCell);
                     
                     // Add row to table
                     alertsTable.appendChild(row);

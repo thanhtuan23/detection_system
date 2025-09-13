@@ -33,22 +33,21 @@
     opacity: 0.9;
 }
 
-.badge-attack {
-    background-color: #dc3545;
-    color: white;
-}
-
-.badge-port-scan {
-    background-color: #fd7e14;
-    color: white;
-}
-
 .badge-blacklist {
     background-color: #6610f2;
     color: white;
 }
 
-.badge-dos {
-    background-color: #dc3545;
+.badge-attack,
+.badge-dos,
+.badge-syn_flood,
+.badge-port_scan,
+.badge-brute_force,
+.badge-web_attack,
+.badge-rst_flood,
+.badge-fin_flood,
+.badge-http_flood,
+.badge-udp_flood {
+    background-color: #dc3545;  /* Tất cả dùng màu đỏ */
     color: white;
 }

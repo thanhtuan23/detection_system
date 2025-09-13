@@ -132,6 +132,7 @@ class FlowState:
         self.rate_src = 0.0  # bytes/sec từ src->dst
         self.rate_dst = 0.0  # bytes/sec từ dst->src
 
+
     def update(self, pkt, direction_src_to_dst: bool):
         ln = int(len(bytes(pkt)))
         now = time.time()
@@ -273,6 +274,12 @@ class IDSEngine:
             "packets_per_second": 0,
             "last_update_time": time.time(),
             "bytes_processed": 0
+        }
+        self.syn_flood_counter = {
+            'last_reset': time.time(),
+            'sources': defaultdict(int),
+            'targets': defaultdict(int),
+            'total_syns': 0
         }
         
         # Lưu 100 cảnh báo gần nhất để hiển thị trên giao diện
@@ -525,7 +532,12 @@ class IDSEngine:
         return True
 
     def _packet_cb(self, pkt):
+        """Callback xử lý mỗi gói tin bắt được"""
         try:
+            # Kiểm tra nếu không phải là gói tin IP
+            if not pkt.haslayer(IP):
+                return
+                
             # Cập nhật thống kê
             self.stats["packets_processed"] += 1
             pkt_size = len(pkt)
@@ -540,9 +552,67 @@ class IDSEngine:
                                                         (now - self.stats["start_time"]))
                 self.stats["last_update_time"] = now
             
+            # Theo dõi SYN Flood - đặt trước _should_process_pkt để bắt tất cả gói SYN
+            if pkt.haslayer(TCP) and pkt[TCP].flags & 0x02:  # SYN flag
+                src_ip = pkt[IP].src
+                dst_ip = pkt[IP].dst
+                
+                # Bỏ qua các gói SYN từ nguồn đáng tin cậy
+                if not self._is_trusted_source(src_ip):
+                    # Cập nhật bộ đếm
+                    # Reset bộ đếm mỗi 10 giây
+                    if now - self.syn_flood_counter['last_reset'] > 10:
+                        self.syn_flood_counter = {
+                            'last_reset': now,
+                            'sources': defaultdict(int),
+                            'targets': defaultdict(int),
+                            'total_syns': 0
+                        }
+                        
+                    self.syn_flood_counter['sources'][src_ip] += 1
+                    self.syn_flood_counter['targets'][dst_ip] += 1
+                    self.syn_flood_counter['total_syns'] += 1
+                    
+                    # Phát hiện SYN Flood dựa trên số lượng gói SYN toàn cục
+                    if self.syn_flood_counter['total_syns'] > 1000:  # Ngưỡng có thể điều chỉnh
+                        # Kiểm tra thêm: nguồn phải gửi ít nhất 25% tổng số SYN
+                        main_source = max(self.syn_flood_counter['sources'].items(), key=lambda x: x[1])
+                        main_target = max(self.syn_flood_counter['targets'].items(), key=lambda x: x[1])
+                        
+                        if main_source[1] >= self.syn_flood_counter['total_syns'] * 0.25:
+                            # Ghi log và thông báo
+                            now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
+                            alert_msg = f"ALERT SYN_Flood proto=tcp {main_source[0]}:* -> {main_target[0]}:* prob=1.000 window={self.window}s"
+                            detail_msg = f" [{main_source[1]} SYNs from source, {self.syn_flood_counter['total_syns']} total]"
+                            print(f"[{now_str}] {alert_msg}{detail_msg}")
+                            self.attack_logger.info(alert_msg)  # Chỉ ghi log cơ bản vào file
+                            
+                            # Thêm vào hàng đợi thông báo
+                            alert_data = {
+                                "type": "syn_flood",
+                                "src_ip": main_source[0],
+                                "src_port": "*",
+                                "dst_ip": main_target[0],
+                                "dst_port": "*",
+                                "proto": "tcp",
+                                "probability": 1.0,
+                                "time": now_str,
+                                "message": alert_msg,
+                                "syn_count": main_source[1],
+                                "total_syns": self.syn_flood_counter['total_syns']
+                            }
+                            self.alert_queue.put(alert_data)
+                            self.recent_alerts.append(alert_data)
+                            self.stats["alerts_generated"] += 1
+                        
+                        # Reset counter để tránh cảnh báo liên tục
+                        self.syn_flood_counter['total_syns'] = 0
+            
+            # Kiểm tra xem gói tin có nên được xử lý chi tiết không
             if not self._should_process_pkt(pkt):
                 return
                 
+            # Xử lý luồng
             key = self._flow_key(pkt)
             with self.lock:
                 if key not in self.flows:
@@ -551,14 +621,40 @@ class IDSEngine:
                 direction = self._direction_src_to_dst(pkt, key)
                 state.update(pkt, direction)
                 self._update_host_window(pkt)
+                
         except Exception as e:
             # Bắt lỗi chi tiết hơn và tránh in thông báo lỗi cho những vấn đề đơn giản
-            if isinstance(e, (AttributeError, IndexError)) and 'sport' in str(e):
+            if isinstance(e, (AttributeError, IndexError)) and ('sport' in str(e) or 'dport' in str(e)):
                 # Lỗi thường gặp khi gói tin không có trường sport/dport - bỏ qua im lặng
                 pass
             else:
                 # Ghi log lỗi quan trọng
-                print(f"CB error: {str(e)}")
+                print(f"CB error: {type(e).__name__}: {str(e)}")
+
+    def _is_trusted_source(self, ip):
+        """Kiểm tra xem IP có phải là nguồn tin cậy không"""
+        # Kiểm tra IP có trong whitelist không
+        if ip in self.whitelist:
+            return True
+            
+        # Kiểm tra các dải IP tin cậy
+        trusted_prefixes = [
+            '74.125.', '142.250.', '64.233.', '216.58.', '172.217.',  # Google
+            '104.18.', '104.19.', '104.20.', '172.65.', '146.75.',    # Cloudflare
+            '52.', '54.', '35.', '18.',                               # AWS
+            '157.240.', '69.171.', '31.13.',                          # Facebook
+        ]
+        
+        for prefix in trusted_prefixes:
+            if ip.startswith(prefix):
+                return True
+                
+        # Các máy chủ nội bộ trong mạng LAN cũng có thể tin cậy
+        if is_private_ip(ip):
+            # Tùy chọn: có thể đặt thành False nếu bạn muốn phát hiện cả tấn công nội bộ
+            return False
+                
+        return False
 
     def _post_process_alert(self, key, prob, state):
         """
@@ -625,15 +721,83 @@ class IDSEngine:
                 if not filtered_flows:
                     self.flows.clear()
                     continue
-                
-                self.stats["flows_analyzed"] += len(filtered_flows)
                     
+                self.stats["flows_analyzed"] += len(filtered_flows)
+                
+                # === PHÁT HIỆN TẤN CÔNG PHÂN TÁN ===
+                # Đếm số luồng từ mỗi IP nguồn và đích
+                source_ip_counts = defaultdict(int)
+                target_ip_counts = defaultdict(int)
+                source_ip_pkts = defaultdict(int)
+                syn_flood_candidates = defaultdict(list)
+                
+                for k, state in filtered_flows.items():
+                    sip, sport, dip, dport, proto = k
+                    source_ip_counts[sip] += 1
+                    target_ip_counts[dip] += 1
+                    source_ip_pkts[sip] += state.pkt_src + state.pkt_dst
+                    
+                    # Kiểm tra đặc điểm của SYN Flood
+                    if proto == "tcp" and "S0" in state.flag_counts:
+                        syn_flood_candidates[sip].append((k, state))
+                
+                # Phát hiện SYN Flood phân tán
+                now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
+                for src_ip, candidates in syn_flood_candidates.items():
+                    # Nếu một nguồn có nhiều hơn 3 luồng SYN hoặc tổng gói tin > 50
+                    if len(candidates) >= 3 or source_ip_pkts[src_ip] > 50:
+                        # Tạo tập hợp các IP đích
+                        targets = set(k[2] for k, _ in candidates)
+                        ports = set(k[3] for k, _ in candidates)
+                        
+                        # Nếu gửi đến nhiều IP đích hoặc nhiều cổng khác nhau
+                        if len(targets) >= 2 or len(ports) >= 5:
+                            # Đây có khả năng là SYN Flood
+                            target_str = ", ".join(list(targets)[:3])
+                            if len(targets) > 3:
+                                target_str += f" và {len(targets)-3} IP khác"
+                                
+                            alert_msg = f"ALERT SYN_Flood proto=tcp {src_ip}:* -> [{target_str}]:* prob=1.000 window={self.window}s"
+                            print(f"[{now}] {alert_msg}")
+                            self.attack_logger.info(alert_msg)
+                            
+                            # Thêm vào hàng đợi thông báo
+                            alert_data = {
+                                "type": attack_type.lower(),
+                                "src_ip": src_ip,
+                                "src_port": "*",
+                                "dst_ip": target_str,
+                                "dst_port": "*",
+                                "proto": "tcp",
+                                "probability": 1.0,
+                                "time": now,
+                                "message": alert_msg,
+                                "bytes_src": sum(st.src_bytes for _, st in candidates),
+                                "bytes_dst": sum(st.dst_bytes for _, st in candidates),
+                                "rate_src": sum(st.rate_src for _, st in candidates),
+                                "rate_dst": sum(st.rate_dst for _, st in candidates),
+                                "duration": self.window,
+                                "flow_count": len(candidates),
+                                "total_pkts": sum(st.pkt_src + st.pkt_dst for _, st in candidates)
+                            }
+                            self.alert_queue.put(alert_data)
+                            self.recent_alerts.append(alert_data)
+                            self.stats["alerts_generated"] += 1
+                
+                # === PHÂN TÍCH LUỒNG THÔNG THƯỜNG ===
+                # Tiếp tục với phân tích các luồng riêng lẻ
                 host_counts = self._build_host_counts()
                 rows, keys, states = [], [], []
                 for k, st in list(filtered_flows.items()):
                     rows.append(st.to_feature_row(k, host_counts))
                     keys.append(k)
                     states.append(st)
+                
+                # Bỏ qua nếu không có dữ liệu sau khi lọc
+                if not rows:
+                    self.flows.clear()
+                    continue
+                    
                 df = pd.DataFrame(rows)
 
                 # Các cột còn thiếu so với preprocess sẽ được OneHot/Scaler bỏ qua
@@ -650,20 +814,13 @@ class IDSEngine:
                 preds = (probs >= self.alert_threshold).astype(int)
 
                 # In cảnh báo sau khi áp dụng hậu xử lý
-                now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
                 for i, (k, p, pr, st) in enumerate(zip(keys, preds, probs, states)):
                     if p == 1 and self._post_process_alert(k, pr, st):
                         sip, sport, dip, dport, proto = k
-                        duration = max(0.1, st.last_ts - st.first_ts)
-                        pkt_rate = (st.pkt_src + st.pkt_dst) / duration
-                        if (st.rate_src > 500000 or st.rate_dst > 500000 or pkt_rate > 100):
-                            # Phân loại chi tiết hơn các loại DoS
-                            if "S0" in st.flag_counts and st.flag_counts["S0"] > 5:
-                                attack_type = "SYN_Flood"
-                            else:
-                                attack_type = "DoS"
-                        else:
-                            attack_type = "Attack"
+                        
+                        # === XÁC ĐỊNH LOẠI TẤN CÔNG ===
+                        attack_type = self._determine_attack_type(k, st)
+                        
                         alert_msg = f"ALERT {attack_type} proto={proto} {sip}:{sport} -> {dip}:{dport} prob={pr:.3f} window={self.window}s"
                         print(f"[{now}] {alert_msg}")
                         
@@ -676,7 +833,7 @@ class IDSEngine:
                             "src_ip": sip,
                             "src_port": sport,
                             "dst_ip": dip,
-                            "dst_port": dport, 
+                            "dst_port": dport,
                             "proto": proto,
                             "probability": float(pr),
                             "time": now,
@@ -685,7 +842,9 @@ class IDSEngine:
                             "bytes_dst": st.dst_bytes,
                             "rate_src": st.rate_src,
                             "rate_dst": st.rate_dst,
-                            "duration": st.last_ts - st.first_ts
+                            "duration": st.last_ts - st.first_ts,
+                            "pkt_src": st.pkt_src,
+                            "pkt_dst": st.pkt_dst
                         }
                         self.alert_queue.put(alert_data)
                         self.recent_alerts.append(alert_data)
@@ -693,6 +852,51 @@ class IDSEngine:
 
                 # reset bộ đếm sau mỗi cửa sổ
                 self.flows.clear()
+
+    def _determine_attack_type(self, key, state):
+        """Xác định loại tấn công dựa trên đặc điểm luồng mạng"""
+        sip, sport, dip, dport, proto = key
+        
+        # Phát hiện SYN Flood
+        if proto == "tcp" and "S0" in state.flag_counts:
+            # Kiểm tra cổng đích = 0 (dấu hiệu của hping3 --flood)
+            if dport == 0 or state.flag_counts["S0"] > 3:
+                return "SYN_Flood"
+        
+        # Tính toán tốc độ gói tin (packets per second)
+        duration = max(0.1, state.last_ts - state.first_ts)  # Tránh chia cho 0
+        pkt_rate = (state.pkt_src + state.pkt_dst) / duration
+        
+        # Phát hiện DoS dựa trên tốc độ gói tin hoặc tốc độ dữ liệu
+        if pkt_rate > 50 or state.rate_src > 500000 or state.rate_dst > 500000:
+            # Kiểm tra các loại DoS cụ thể dựa trên flag TCP
+            if proto == "tcp":
+                if "R" in state.flag_counts and state.flag_counts["R"] > 3:
+                    return "RST_Flood"
+                elif "F" in state.flag_counts and state.flag_counts["F"] > 3:
+                    return "FIN_Flood"
+                elif "P" in state.flag_counts and pkt_rate > 100:
+                    return "HTTP_Flood"
+            
+            # Phát hiện UDP Flood
+            if proto == "udp" and pkt_rate > 100:
+                return "UDP_Flood"
+                
+            # Nếu không phải loại cụ thể nào, chỉ ghi là DoS
+            return "DoS"
+            
+        # Phát hiện Port Scan
+        if proto == "tcp" and state.pkt_src > 3 and state.pkt_dst < 2:
+            if "S0" in state.flag_counts or "REJ" in state.flag_counts:
+                return "Port_Scan"
+        
+        # Phát hiện Brute Force (nhiều kết nối đến cổng xác thực)
+        auth_ports = [22, 23, 3389, 5900, 21, 25, 110, 143]
+        if dport in auth_ports and state.pkt_src > 10:
+            return "Brute_Force"
+        
+        # Mặc định là "Attack" chung
+        return "Attack"
 
     def start(self):
         """Bắt đầu IDS"""

@@ -133,7 +133,6 @@ class Notifier:
                         <th>Type</th>
                         <th>Source</th>
                         <th>Destination</th>
-                        <th>Probability</th>
                     </tr>
             """
             
@@ -147,7 +146,6 @@ class Notifier:
                         <td>{alert.get('type', 'attack').upper()}</td>
                         <td>{src}</td>
                         <td>{dst}</td>
-                        <td class="{prob_class}">{alert.get('probability', 0):.3f}</td>
                     </tr>
                 """
                 
@@ -197,8 +195,7 @@ class Notifier:
                 for i, alert in enumerate(type_alerts[:5]):  # Giới hạn 5 cảnh báo mỗi loại
                     src = f"{alert.get('src_ip', '')}:{alert.get('src_port', '')}"
                     dst = f"{alert.get('dst_ip', '')}:{alert.get('dst_port', '')}"
-                    prob = alert.get('probability', 0)
-                    message += f"- {src} → {dst} (Prob: {prob:.2f})\n"
+                    message += f"{i+1}. {src} -> {dst}\n"
                 
                 if len(type_alerts) > 5:
                     message += f"_...and {len(type_alerts) - 5} more {alert_type} alerts_\n"
