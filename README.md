@@ -22,17 +22,16 @@ cd realtime-ids
 ```
 2. Cài đặt các phụ thuộc
 ```bash
-# Cài đặt thư viện pcap (Ubuntu/Debian)
-sudo apt-get install -y libpcap-dev
+# Cài môi trường venv trước khi cài thư viện (Linux/ Windows có thể bỏ qua và tới bước cài đặt thư viện)
+python3 -m venv venv
 
-# Cài đặt các phụ thuộc Python
+#Kích hoạt môi trường sau
+source venv/bin/active
+
+# Cài đặt thư viện trong môi trường venv sau khi kích hoạt
 pip install -r requirements.txt
 ```
-3. Chuẩn bị mô hình
-```bash
-mkdir -p models
-```
-4. Cấu hình hệ thống
+3. Cấu hình hệ thống
 Chỉnh sửa file cấu hình theo nhu cầu:
 - Tên lớp mạng bắt gói tin
 - Tên mô hình AI
