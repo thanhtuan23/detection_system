@@ -43,9 +43,8 @@ class SynFloodGlobalDetector:
             main_target = max(self.targets.items(), key=lambda x: x[1])
             if main_source[1] >= self.total_syns * 0.25:
                 now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
-                alert_msg = (
-                    f"ALERT SYN_Flood proto=tcp {main_source[0]}:* -> {main_target[0]}:* prob=1.000 window={window_seconds}s"
-                )
+                # Rút gọn log: bỏ 'prob=1.000 window=..s'
+                alert_msg = f"ALERT SYN_Flood proto=tcp {main_source[0]}:* -> {main_target[0]}:*"
                 print(f"[{now_str}] {alert_msg}")
                 attack_logger.info(alert_msg)
                 alert_data = {
@@ -93,7 +92,7 @@ class SynFloodDistributedDetector:
                     target_str = ", ".join(list(targets)[:3])
                     if len(targets) > 3:
                         target_str += f" và {len(targets)-3} IP khác"
-                    alert_msg = f"ALERT SYN_Flood proto=tcp {src_ip}:* -> [{target_str}]:* prob=1.000 window={window_seconds}s"
+                    alert_msg = f"ALERT SYN_Flood proto=tcp {src_ip}:* -> [{target_str}]:*"
                     print(f"[{now_str}] {alert_msg}")
                     attack_logger.info(alert_msg)
                     alert_data = {
@@ -154,9 +153,7 @@ class UDPGlobalDetector:
             main_target = max(self.targets.items(), key=lambda x: x[1])
             if main_source[1] >= self.total_udp * 0.25:
                 now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
-                alert_msg = (
-                    f"ALERT UDP_Flood proto=udp {main_source[0]}:* -> {main_target[0]}:* prob=1.000 window={window_seconds}s"
-                )
+                alert_msg = f"ALERT UDP_Flood proto=udp {main_source[0]}:* -> {main_target[0]}:*"
                 print(f"[{now_str}] {alert_msg}")
                 attack_logger.info(alert_msg)
                 alert_data = {
@@ -201,7 +198,7 @@ class UDPDistributedDetector:
                     target_str = ", ".join(list(targets)[:3])
                     if len(targets) > 3:
                         target_str += f" và {len(targets)-3} IP khác"
-                    alert_msg = f"ALERT UDP_Flood proto=udp {src_ip}:* -> [{target_str}]:* prob=1.000 window={window_seconds}s"
+                    alert_msg = f"ALERT UDP_Flood proto=udp {src_ip}:* -> [{target_str}]:*"
                     print(f"[{now_str}] {alert_msg}")
                     attack_logger.info(alert_msg)
                     alert_data = {
@@ -262,9 +259,7 @@ class ICMPGlobalDetector:
             main_target = max(self.targets.items(), key=lambda x: x[1])
             if main_source[1] >= self.total_icmp * 0.25:
                 now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
-                alert_msg = (
-                    f"ALERT ICMP_Flood proto=icmp {main_source[0]}:* -> {main_target[0]}:* prob=1.000 window={window_seconds}s"
-                )
+                alert_msg = f"ALERT ICMP_Flood proto=icmp {main_source[0]}:* -> {main_target[0]}:*"
                 print(f"[{now_str}] {alert_msg}")
                 attack_logger.info(alert_msg)
                 alert_data = {
@@ -308,7 +303,7 @@ class ICMPDistributedDetector:
                     target_str = ", ".join(list(targets)[:3])
                     if len(targets) > 3:
                         target_str += f" và {len(targets)-3} IP khác"
-                    alert_msg = f"ALERT ICMP_Flood proto=icmp {src_ip}:* -> [{target_str}]:* prob=1.000 window={window_seconds}s"
+                    alert_msg = f"ALERT ICMP_Flood proto=icmp {src_ip}:* -> [{target_str}]:*"
                     print(f"[{now_str}] {alert_msg}")
                     attack_logger.info(alert_msg)
                     alert_data = {

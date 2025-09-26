@@ -409,10 +409,8 @@ class IDSEngine:
                     if p == 1 and self._post_process_alert(k, pr, st):
                         sip, sport, dip, dport, proto = k
                         attack_type = self._determine_attack_type(k, st)
-                        alert_msg = (
-                            f"ALERT {attack_type} proto={proto} {sip}:{sport} -> {dip}:{dport} "
-                            f"prob={pr:.3f} window={self.window}s"
-                        )
+                        # Rút gọn log: bỏ xác suất & kích thước cửa sổ khỏi chuỗi log để ngắn gọn hơn
+                        alert_msg = f"ALERT {attack_type} proto={proto} {sip}:{sport} -> {dip}:{dport}"
                         now_str_local = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
                         print(f"[{now_str_local}] {alert_msg}")
                         self.attack_logger.info(alert_msg)
