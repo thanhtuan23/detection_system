@@ -1,34 +1,34 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="vi">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Realtime IDS - Settings</title>
+    <title>IDS Thời Gian Thực - Cài đặt</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
         <div class="container">
-            <a class="navbar-brand" href="/">Realtime IDS</a>
+            <a class="navbar-brand" href="/">IDS Thời Gian Thực</a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav">
                     <li class="nav-item">
-                        <a class="nav-link" href="/">Dashboard</a>
+                        <a class="nav-link" href="/">Bảng điều khiển</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/logs">Logs</a>
+                        <a class="nav-link" href="/logs">Nhật ký</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link active" href="/settings">Settings</a>
+                        <a class="nav-link active" href="/settings">Cài đặt</a>
                     </li>
                 </ul>
                 <ul class="navbar-nav ms-auto">
                     <li class="nav-item">
-                        <a class="nav-link" href="/logout">Logout</a>
+                        <a class="nav-link" href="/logout">Đăng xuất</a>
                     </li>
                 </ul>
             </div>
@@ -37,47 +37,47 @@
 
     <div class="container mt-4">
         <div class="alert alert-success d-none" id="save-success">
-            Settings saved successfully!
+            Lưu cài đặt thành công!
         </div>
         <div class="alert alert-danger d-none" id="save-error">
-            Error saving settings!
+            Lỗi khi lưu cài đặt!
         </div>
         
         <form id="settings-form">
             <div class="card mb-4">
                 <div class="card-header bg-primary text-white">
-                    <h5 class="mb-0">Network Settings</h5>
+                    <h5 class="mb-0">Cài đặt mạng</h5>
                 </div>
                 <div class="card-body">
                     <div class="row">
                         <div class="col-md-6">
                             <div class="mb-3">
-                                <label for="interface" class="form-label">Network Interface</label>
+                                <label for="interface" class="form-label">Giao diện mạng</label>
                                 <input type="text" class="form-control" id="interface" name="interface" value="{{ settings.network.interface }}">
-                                <div class="form-text">The network interface to monitor (e.g., eth0, wlan0)</div>
+                                <div class="form-text">Giao diện sẽ giám sát (ví dụ: eth0, wlan0)</div>
                             </div>
                         </div>
                         <div class="col-md-6">
                             <div class="mb-3">
-                                <label for="window" class="form-label">Analysis Window (seconds)</label>
+                                <label for="window" class="form-label">Cửa sổ phân tích (giây)</label>
                                 <input type="number" class="form-control" id="window" name="window" value="{{ settings.network.window }}">
-                                <div class="form-text">Time window for collecting and analyzing network flows</div>
+                                <div class="form-text">Khoảng thời gian gom & phân tích lưu lượng</div>
                             </div>
                         </div>
                     </div>
                     <div class="row">
                         <div class="col-md-6">
                             <div class="mb-3">
-                                <label for="min_packets" class="form-label">Minimum Packets</label>
+                                <label for="min_packets" class="form-label">Số gói tối thiểu</label>
                                 <input type="number" class="form-control" id="min_packets" name="min_packets" value="{{ settings.network.min_packets }}">
-                                <div class="form-text">Minimum packets required to analyze a flow</div>
+                                <div class="form-text">Số gói tối thiểu để phân tích một luồng</div>
                             </div>
                         </div>
                         <div class="col-md-6">
                             <div class="mb-3">
-                                <label for="min_bytes" class="form-label">Minimum Bytes</label>
+                                <label for="min_bytes" class="form-label">Bytes tối thiểu</label>
                                 <input type="number" class="form-control" id="min_bytes" name="min_bytes" value="{{ settings.network.min_bytes }}">
-                                <div class="form-text">Minimum bytes required to analyze a flow</div>
+                                <div class="form-text">Số byte tối thiểu để phân tích một luồng</div>
                             </div>
                         </div>
                     </div>
@@ -86,31 +86,31 @@
 
             <div class="card mb-4">
                 <div class="card-header bg-success text-white">
-                    <h5 class="mb-0">Model Settings</h5>
+                    <h5 class="mb-0">Cài đặt mô hình</h5>
                 </div>
                 <div class="card-body">
                     <div class="row">
                         <div class="col-md-6">
                             <div class="mb-3">
-                                <label for="model_path" class="form-label">Model Path</label>
+                                <label for="model_path" class="form-label">Đường dẫn mô hình</label>
                                 <input type="text" class="form-control" id="model_path" name="model_path" value="{{ settings.model.model_path }}">
-                                <div class="form-text">Path to the trained model (.h5 file)</div>
+                                <div class="form-text">Đường dẫn tới mô hình đã huấn luyện (.h5)</div>
                             </div>
                         </div>
                         <div class="col-md-6">
                             <div class="mb-3">
-                                <label for="preprocess_path" class="form-label">Preprocessing Path</label>
+                                <label for="preprocess_path" class="form-label">Đường dẫn tiền xử lý</label>
                                 <input type="text" class="form-control" id="preprocess_path" name="preprocess_path" value="{{ settings.model.preprocess_path }}">
-                                <div class="form-text">Path to the preprocessing pipeline (.pkl file)</div>
+                                <div class="form-text">Đường dẫn pipeline tiền xử lý (.pkl)</div>
                             </div>
                         </div>
                     </div>
                     <div class="row">
                         <div class="col-md-6">
                             <div class="mb-3">
-                                <label for="threshold" class="form-label">Alert Threshold</label>
+                                <label for="threshold" class="form-label">Ngưỡng cảnh báo</label>
                                 <input type="number" step="0.01" min="0" max="1" class="form-control" id="threshold" name="threshold" value="{{ settings.model.threshold }}">
-                                <div class="form-text">Probability threshold for generating alerts (0-1)</div>
+                                <div class="form-text">Ngưỡng xác suất sinh cảnh báo (0-1)</div>
                             </div>
                         </div>
                     </div>
@@ -119,44 +119,44 @@
 
             <div class="card mb-4">
                 <div class="card-header bg-info text-white">
-                    <h5 class="mb-0">Notification Settings</h5>
+                    <h5 class="mb-0">Cài đặt thông báo</h5>
                 </div>
                 <div class="card-body">
                     <div class="mb-3 form-check">
                         <input type="checkbox" class="form-check-input" id="enable_email" name="enable_email" {% if settings.notification.enable_email %}checked{% endif %}>
-                        <label class="form-check-label" for="enable_email">Enable Email Notifications</label>
+                        <label class="form-check-label" for="enable_email">Bật thông báo Email</label>
                     </div>
                     
                     <div id="email-settings" class="{% if not settings.notification.enable_email %}d-none{% endif %}">
                         <div class="row">
                             <div class="col-md-6">
                                 <div class="mb-3">
-                                    <label for="email_sender" class="form-label">Email Sender</label>
+                                    <label for="email_sender" class="form-label">Email gửi</label>
                                     <input type="email" class="form-control" id="email_sender" name="email_sender" value="{{ settings.notification.email_sender }}">
-                                    <div class="form-text">Your Gmail address</div>
+                                    <div class="form-text">Địa chỉ Gmail của bạn</div>
                                 </div>
                             </div>
                             <div class="col-md-6">
                                 <div class="mb-3">
-                                    <label for="email_password" class="form-label">App Password</label>
+                                    <label for="email_password" class="form-label">Mật khẩu ứng dụng</label>
                                     <input type="password" class="form-control" id="email_password" name="email_password" placeholder="Your Gmail app password">
-                                    <div class="form-text">App password for Gmail (not your regular password)</div>
+                                    <div class="form-text">Mật khẩu ứng dụng Gmail (khác mật khẩu đăng nhập)</div>
                                 </div>
                             </div>
                         </div>
                         <div class="row">
                             <div class="col-md-6">
                                 <div class="mb-3">
-                                    <label for="email_recipient" class="form-label">Email Recipient</label>
+                                    <label for="email_recipient" class="form-label">Email nhận</label>
                                     <input type="email" class="form-control" id="email_recipient" name="email_recipient" value="{{ settings.notification.email_recipient }}">
-                                    <div class="form-text">Email address to receive notifications</div>
+                                    <div class="form-text">Email sẽ nhận thông báo</div>
                                 </div>
                             </div>
                             <div class="col-md-6">
                                 <div class="mb-3">
-                                    <label for="email_interval" class="form-label">Email Interval (seconds)</label>
+                                    <label for="email_interval" class="form-label">Khoảng cách Email (giây)</label>
                                     <input type="number" class="form-control" id="email_interval" name="email_interval" value="{{ settings.notification.email_interval }}">
-                                    <div class="form-text">Minimum time between email notifications</div>
+                                    <div class="form-text">Thời gian tối thiểu giữa các email</div>
                                 </div>
                             </div>
                         </div>
@@ -166,32 +166,32 @@
                     
                     <div class="mb-3 form-check">
                         <input type="checkbox" class="form-check-input" id="enable_telegram" name="enable_telegram" {% if settings.notification.enable_telegram %}checked{% endif %}>
-                        <label class="form-check-label" for="enable_telegram">Enable Telegram Notifications</label>
+                        <label class="form-check-label" for="enable_telegram">Bật thông báo Telegram</label>
                     </div>
                     
                     <div id="telegram-settings" class="{% if not settings.notification.enable_telegram %}d-none{% endif %}">
                         <div class="row">
                             <div class="col-md-6">
                                 <div class="mb-3">
-                                    <label for="telegram_token" class="form-label">Telegram Bot Token</label>
+                                    <label for="telegram_token" class="form-label">Token Bot Telegram</label>
                                     <input type="text" class="form-control" id="telegram_token" name="telegram_token" placeholder="Your bot token">
-                                    <div class="form-text">Token from BotFather (@BotFather on Telegram)</div>
+                                    <div class="form-text">Token lấy từ BotFather (@BotFather)</div>
                                 </div>
                             </div>
                             <div class="col-md-6">
                                 <div class="mb-3">
                                     <label for="telegram_chat_id" class="form-label">Chat ID</label>
                                     <input type="text" class="form-control" id="telegram_chat_id" name="telegram_chat_id" value="{{ settings.notification.telegram_chat_id }}">
-                                    <div class="form-text">Your chat ID or group chat ID</div>
+                                    <div class="form-text">Chat ID cá nhân hoặc nhóm</div>
                                 </div>
                             </div>
                         </div>
                         <div class="row">
                             <div class="col-md-6">
                                 <div class="mb-3">
-                                    <label for="telegram_interval" class="form-label">Telegram Interval (seconds)</label>
+                                    <label for="telegram_interval" class="form-label">Khoảng cách Telegram (giây)</label>
                                     <input type="number" class="form-control" id="telegram_interval" name="telegram_interval" value="{{ settings.notification.telegram_interval }}">
-                                    <div class="form-text">Minimum time between Telegram notifications</div>
+                                    <div class="form-text">Thời gian tối thiểu giữa các thông báo Telegram</div>
                                 </div>
                             </div>
                         </div>
@@ -200,7 +200,7 @@
             </div>
             
             <div class="d-grid gap-2 d-md-flex justify-content-md-end mb-4">
-                <button type="submit" class="btn btn-primary">Save Settings</button>
+                <button type="submit" class="btn btn-primary">Lưu cài đặt</button>
             </div>
         </form>
     </div>

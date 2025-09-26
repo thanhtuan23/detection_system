@@ -1,34 +1,34 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="vi">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Realtime IDS - Logs</title>
+    <title>IDS Thời Gian Thực - Nhật ký</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
         <div class="container">
-            <a class="navbar-brand" href="/">Realtime IDS</a>
+            <a class="navbar-brand" href="/">IDS Thời Gian Thực</a>
                 <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
                 <span class="navbar-toggler-icon"></span>
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav">
                     <li class="nav-item">
-                        <a class="nav-link" href="/">Dashboard</a>
+                        <a class="nav-link" href="/">Bảng điều khiển</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link active" href="/logs">Logs</a>
+                        <a class="nav-link active" href="/logs">Nhật ký</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="/settings">Settings</a>
+                        <a class="nav-link" href="/settings">Cài đặt</a>
                     </li>
                 </ul>
                 <ul class="navbar-nav ms-auto">
                     <li class="nav-item">
-                        <a class="nav-link" href="/logout">Logout</a>
+                        <a class="nav-link" href="/logout">Đăng xuất</a>
                     </li>
                 </ul>
             </div>
@@ -38,15 +38,12 @@
     <div class="container mt-4">
         <div class="card mb-4">
             <div class="card-header bg-danger text-white d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">Attack Logs</h5>
-                <div>
-                    <button id="refresh-logs" class="btn btn-sm btn-light">Refresh</button>
-                    <button id="toggle-realtime" class="btn btn-sm btn-light">Enable Realtime</button>
-                </div>
+                <h5 class="mb-0">Nhật ký tấn công</h5>
+                <div class="text-end small text-light">Luôn cập nhật thời gian thực</div>
             </div>
             <div class="card-body">
                 <div class="form-group mb-3">
-                    <input type="text" id="log-filter" class="form-control" placeholder="Filter logs...">
+                    <input type="text" id="log-filter" class="form-control" placeholder="Lọc theo từ khóa...">
                 </div>
                 <div class="log-container">
                     <pre id="log-content" class="log-pre"></pre>
@@ -59,35 +56,16 @@
     <script>
         document.addEventListener('DOMContentLoaded', function() {
             const logContent = document.getElementById('log-content');
-            const refreshButton = document.getElementById('refresh-logs');
-            const realtimeButton = document.getElementById('toggle-realtime');
+            // Bỏ nút refresh & realtime => luôn realtime
             const filterInput = document.getElementById('log-filter');
             
-            let realtimeEnabled = false;
+            let realtimeEnabled = true; // luôn bật
             let eventSource = null;
             let allLogLines = [];
             
             // Load initial logs
-            loadLogs();
-            
-            // Refresh logs button
-            refreshButton.addEventListener('click', loadLogs);
-            
-            // Toggle realtime button
-            realtimeButton.addEventListener('click', function() {
-                realtimeEnabled = !realtimeEnabled;
-                if (realtimeEnabled) {
-                    startRealtimeLog();
-                    realtimeButton.textContent = 'Disable Realtime';
-                    realtimeButton.classList.remove('btn-light');
-                    realtimeButton.classList.add('btn-warning');
-                } else {
-                    stopRealtimeLog();
-                    realtimeButton.textContent = 'Enable Realtime';
-                    realtimeButton.classList.remove('btn-warning');
-                    realtimeButton.classList.add('btn-light');
-                }
-            });
+            loadLogs(); // tải ban đầu
+            startRealtimeLog(); // luôn bật streaming
             
             // Filter logs
             filterInput.addEventListener('input', function() {
@@ -142,12 +120,10 @@
                 };
                 
                 eventSource.onerror = function() {
-                    console.error('EventSource failed, stopping realtime logs');
+                    console.error('EventSource lỗi, thử kết nối lại trong 3s...');
                     stopRealtimeLog();
-                    realtimeButton.textContent = 'Enable Realtime';
-                    realtimeButton.classList.remove('btn-warning');
-                    realtimeButton.classList.add('btn-light');
-                    realtimeEnabled = false;
+                    setTimeout(() => { startRealtimeLog(); }, 3000);
+                    realtimeEnabled = true;
                 };
             }
             

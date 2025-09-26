@@ -1,4 +1,8 @@
-# Google
+# =====================
+# Google (DNS, CDN, STUN, QUIC)
+# =====================
+8.8.8.8
+8.8.4.4
 74.125.130.103
 74.125.130.99
 74.125.68.91
@@ -10,8 +14,18 @@
 *.googleapis.com
 *.gstatic.com
 *.ggpht.com
+*.googlevideo.com
+stun.l.google.com
+stun1.l.google.com
+stun2.l.google.com
+stun3.l.google.com
+stun4.l.google.com
 
-# Cloudflare
+# =====================
+# Cloudflare (DNS, CDN, QUIC/HTTP3)
+# =====================
+1.1.1.1
+1.0.0.1
 104.18.4.159
 104.18.5.159
 146.75.121.91
@@ -19,9 +33,53 @@
 172.65.251.78
 *.cloudflare.com
 *.cloudflare-dns.com
+*.cloudflare-quic.com
 
-# Khac 
+# =====================
+# Quad9 / OpenDNS / AdGuard DNS
+# =====================
+9.9.9.9
+149.112.112.112
+208.67.222.222
+208.67.220.220
+94.140.*.*
+*.adguard-dns.com
+
+# =====================
+# Akamai / Fastly / CDN khác
+# =====================
+*.akamaized.net
+*.akamaiedge.net
+*.fastly.net
+151.101.*.*
+
+# =====================
+# Microsoft / Skype / Teams / Xbox Live
+# =====================
+*.skype.com
+*.teams.microsoft.com
+*.xboxlive.com
+13.107.64.*
+13.107.65.*
+13.107.66.*
+13.107.67.*
+
+# =====================
+# Zoom / WebRTC / VoIP
+# =====================
+*.zoom.us
+*.zoomcdn.io
+*.zoomus.io
+*.stun.services.mozilla.com
+
+# =====================
+# NTP Pool
+# =====================
+pool.ntp.org
+*.pool.ntp.org
+
+# =====================
+# Khác 
+# =====================
 34.120.158.37
 151.101.129.91
-*.adguard-dns.com
-94.140.*.*

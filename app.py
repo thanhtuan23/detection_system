@@ -10,6 +10,7 @@ import json
 import time
 import threading
 import configparser
+import logging
 from flask import Flask, render_template, jsonify, request, redirect, url_for, Response, session
 from functools import wraps
 from datetime import datetime
@@ -17,10 +18,9 @@ from datetime import datetime
 # Import modules
 from ids_engine import get_ids_instance
 from notifier import get_notifier_instance
-
-# Đọc cấu hình
+from config_manager import GLOBAL_CONFIG
 config = configparser.ConfigParser()
-config.read('config.ini')
+config.read('config.ini', encoding='utf-8')  # Use GLOBAL_CONFIG for initial values
 
 # Tạo Flask app
 app = Flask(__name__)
@@ -34,6 +34,32 @@ PORT = config.getint('WebUI', 'port', fallback=5000)
 # Khởi tạo IDS và Notifier
 ids = get_ids_instance('config.ini')
 notifier = get_notifier_instance('config.ini')
+ids.apply_config(GLOBAL_CONFIG)
+notifier.apply_config(GLOBAL_CONFIG)
+
+# Đảm bảo app không ghi log giản lược vào logs/attack.log
+attack_logger = logging.getLogger("attack_logger")
+
+def log_alert_to_file(alert: dict):
+    """
+    Ghi log chi tiết vào file nếu thật sự cần từ web (mặc định KHÔNG cần vì engine đã ghi).
+    Nếu phải ghi, luôn ưu tiên message chi tiết do engine tạo.
+    """
+    msg = alert.get("message")
+    if not msg:
+        t = (alert.get("detail_type") or alert.get("type") or "Attack")
+        proto = alert.get("proto") or "tcp"
+        sip = alert.get("src_ip") or "-"
+        sport = alert.get("src_port") or "-"
+        dip = alert.get("dst_ip") or "-"
+        dport = alert.get("dst_port") or "-"
+        prob = alert.get("probability")
+        # fallback dạng chi tiết, tránh mẫu "ALERT attack - Probability"
+        if prob is not None:
+            msg = f"ALERT {t} proto={proto} {sip}:{sport} -> {dip}:{dport} prob={float(prob):.3f}"
+        else:
+            msg = f"ALERT {t} proto={proto} {sip}:{sport} -> {dip}:{dport}"
+    attack_logger.info(msg)
 
 # Luồng chuyển tiếp cảnh báo đến notifier
 def forward_alerts():
@@ -88,7 +114,7 @@ def logs():
 def settings():
     # Đọc cấu hình hiện tại
     config = configparser.ConfigParser()
-    config.read('config.ini')
+    config.read('config.ini', encoding='utf-8')
     
     # Chuẩn bị dữ liệu cấu hình
     settings = {
@@ -139,7 +165,22 @@ def get_stats():
 @app.route('/api/alerts')
 @login_required
 def get_alerts():
-    return jsonify(ids.get_recent_alerts())
+    # Gom các loại tấn công thành 'attack' trên web, nhưng giữ nguyên chi tiết trong log
+    raw_alerts = ids.get_recent_alerts()
+    attack_types = {
+        'attack', 'dos', 'syn_flood', 'udp_flood', 'port_scan', 'brute_force',
+        'web_attack', 'rst_flood', 'fin_flood', 'http_flood'
+    }
+    ui_alerts = []
+    for a in raw_alerts:
+        # Sao chép để không ảnh hưởng dữ liệu gốc dùng cho notifier/log
+        b = dict(a)
+        original_type = (b.get('type') or '').lower()
+        if original_type in attack_types:
+            b['detail_type'] = original_type  # giữ lại loại chi tiết nếu cần hiển thị sau này
+            b['type'] = 'attack'              # gom nhóm cho UI
+        ui_alerts.append(b)
+    return jsonify(ui_alerts)
 
 @app.route('/api/log')
 @login_required
@@ -155,7 +196,7 @@ def get_log():
     if not os.path.exists(log_path):
         return jsonify({'lines': []})
         
-    with open(log_path, 'r') as f:
+    with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
         # Đọc toàn bộ tệp và lấy các dòng cuối
         all_lines = f.readlines()
         last_lines = all_lines[-lines:] if lines < len(all_lines) else all_lines
@@ -165,52 +206,27 @@ def get_log():
 @app.route('/api/settings', methods=['POST'])
 @login_required
 def save_settings():
-    global ids, notifier  # Thêm khai báo global
-    settings = request.json
-    
-    # Đọc cấu hình hiện tại
-    config = configparser.ConfigParser()
-    config.read('config.ini')
-    
-    # Cập nhật cấu hình
-    if 'network' in settings:
-        for key, value in settings['network'].items():
-            config.set('Network', key, str(value))
-            
-    if 'model' in settings:
-        for key, value in settings['model'].items():
-            config.set('Model', key, str(value))
-            
-    if 'notification' in settings:
-        for key, value in settings['notification'].items():
-            config.set('Notification', key, str(value))
-    
-    # Lưu cấu hình
-    with open('config.ini', 'w') as f:
-        config.write(f)
-        
-    # Khởi động lại các dịch vụ nếu đang chạy
-    was_running = False
-    if ids.running:
-        was_running = True
-        ids.stop()
-        
-    # Tạo lại instances với cấu hình mới
-    ids = get_ids_instance('config.ini')
-    notifier = get_notifier_instance('config.ini')
-    
-    # Khởi động lại nếu trước đó đang chạy
-    if was_running:
-        ids.start()
-        notifier.start()
-        
-    return jsonify({'success': True})
+    payload = request.json or {}
+    updates = {}
+    if 'network' in payload:
+        updates['Network'] = payload['network']
+    if 'model' in payload:
+        updates.setdefault('Model', {}).update(payload['model'])
+    if 'notification' in payload:
+        updates.setdefault('Notification', {}).update(payload['notification'])
+
+    if updates:
+        GLOBAL_CONFIG.write_updates(updates)
+        ids.apply_config(GLOBAL_CONFIG)
+        notifier.apply_config(GLOBAL_CONFIG)
+
+    return jsonify({'success': True, 'hot_reloaded': True})
 
 @app.route('/api/log/stream')
 @login_required
 def stream_log():
     def generate():
-        with open('logs/attack.log', 'r') as f:
+        with open('logs/attack.log', 'r', encoding='utf-8', errors='ignore') as f:
             # Di chuyển con trỏ đến cuối tệp
             f.seek(0, 2)
             while True:

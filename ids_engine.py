@@ -1,271 +1,137 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-Realtime IDS Engine - Phiên bản cải tiến với hỗ trợ giao diện web
+"""Realtime IDS Engine – lõi xử lý chính
+
+Chức năng chính:
+1. Thu thập gói tin (sniff) theo giao diện cấu hình
+2. Gom nhóm thành luồng (flow) và duy trì trạng thái FlowState
+3. Tính đặc trưng gần giống NSL-KDD + đặc trưng bổ sung (tốc độ, is_https...)
+4. Chạy qua pipeline tiền xử lý + mô hình ML/DL (tự động tải dựa metrics)
+5. Áp dụng heuristics hậu xử lý để giảm false positive
+6. Kết hợp nhiều detector chuyên biệt: SYN/UDP/ICMP Flood (global & distributed), Port Scan
+7. Đẩy cảnh báo sang hàng đợi cho notifier + giao diện web
+
+Thiết kế hot-reload: apply_config() cho phép cập nhật ngưỡng, cửa sổ, mô hình
+không cần khởi động lại thread sniffing.
 """
 
-import time
-import threading
-import logging
 import os
-import re
+import time
 import queue
+import threading
 import configparser
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
-import joblib
+
+from detectors.port_scan import PortScanDetector
+
+# Giảm log TF (nếu môi trường có cài TF)
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-import tensorflow as tf
-from scapy.all import sniff, IP, TCP, UDP, ICMP, Raw
+from scapy.all import sniff, IP, TCP, UDP
 
-# ------------ Cấu hình mặc định ------------
-SERVICE_PORT_MAP = {
-    80: "http", 443: "http_443", 21: "ftp", 20: "ftp_data",
-    22: "ssh", 23: "telnet", 25: "smtp", 53: "domain_u", 110: "pop_3",
-    143: "imap4", 8080: "http_8080"
-}
+# Internal modules
+from logging_utils import setup_logging
+from ids_utils import (
+    TRUSTED_DOMAINS,
+    proto_name,
+    guess_service,
+)
+from flow_state import FlowState
+from detectors.heuristics import (
+    is_trusted_source as _h_is_trusted_source,
+    post_process_alert as _h_post_process_alert,
+    determine_attack_type as _h_determine_attack_type,
+)
+from detectors.floods import (
+    SynFloodGlobalDetector,
+    SynFloodDistributedDetector,
+    UDPGlobalDetector,
+    UDPDistributedDetector,
+    ICMPGlobalDetector,
+    ICMPDistributedDetector,
+)
+from detectors.packet_filter import PacketFilter
+from model_runtime import load_model_and_preprocess, predict_probabilities
 
-# Danh sách các tên miền và IP tin cậy - thêm vào khi cần
-TRUSTED_DOMAINS = [
-    'google.com', 'googleapis.com', 'gstatic.com', 'youtube.com', 
-    'facebook.com', 'fbcdn.net', 'microsoft.com', 'windows.com',
-    'apple.com', 'icloud.com', 'amazon.com', 'cloudfront.net',
-    'cloudflare.com', 'akamai.net', 'fastly.net', 'github.com',
-    'gmail.com', 'yahoo.com', 'twitter.com', 'instagram.com'
-]
-
-# Các IP nội bộ/private sẽ được xem là an toàn hơn
-PRIVATE_IP_PATTERNS = [
-    r'^10\.', 
-    r'^172\.(1[6-9]|2[0-9]|3[0-1])\.',
-    r'^192\.168\.',
-    r'^127\.',
-    r'^169\.254\.'
-]
-
-# Thiết lập logging
-def setup_logging():
-    # Tạo thư mục logs nếu chưa tồn tại
-    os.makedirs("logs", exist_ok=True)
-    
-    # Thiết lập logger cho các cảnh báo tấn công
-    attack_logger = logging.getLogger("attack_logger")
-    attack_logger.setLevel(logging.INFO)
-    
-    # File handler
-    file_handler = logging.FileHandler("logs/attack.log")
-    file_format = logging.Formatter('%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-    file_handler.setFormatter(file_format)
-    attack_logger.addHandler(file_handler)
-    
-    # Không gửi log tới console
-    attack_logger.propagate = False
-    
-    return attack_logger
-
-def is_private_ip(ip):
-    """Kiểm tra xem IP có phải là IP riêng/nội bộ không"""
-    for pattern in PRIVATE_IP_PATTERNS:
-        if re.match(pattern, ip):
-            return True
-    return False
-
-def tcp_flag_to_nslkdd(pkt) -> str:
-    """
-    Ánh xạ TCP flags về nhãn gần giống NSL-KDD
-    """
-    if not pkt.haslayer(TCP):
-        return "SF"
-    flags = pkt[TCP].flags
-    # bit flags
-    F = {"F": 0x01, "S": 0x02, "R": 0x04, "P": 0x08, "A": 0x10, "U": 0x20}
-    fS, fF, fR, fA = bool(flags & F["S"]), bool(flags & F["F"]), bool(flags & F["R"]), bool(flags & F["A"])
-    if fR and not fA:
-        return "REJ"
-    if fS and not fA:
-        return "S0"
-    if fR and fA:
-        return "RSTR"
-    if fF and fA:
-        return "RSTO"
-    if fS and fF:
-        return "SH"
-    return "SF"
-
-def proto_name(pkt) -> str:
-    if pkt.haslayer(TCP):  return "tcp"
-    if pkt.haslayer(UDP):  return "udp"
-    if pkt.haslayer(ICMP): return "icmp"
-    return "tcp"  # mặc định
-
-def guess_service(pkt) -> str:
-    dport = None
-    if pkt.haslayer(TCP):
-        dport = pkt[TCP].dport
-    elif pkt.haslayer(UDP):
-        dport = pkt[UDP].dport
-    if dport in SERVICE_PORT_MAP:
-        return SERVICE_PORT_MAP[dport]
-    return "other"
-
-# --------- Bộ gom & đặc trưng luồng ----------
-class FlowState:
-    __slots__ = ("first_ts","last_ts","src_bytes","dst_bytes","pkt_src","pkt_dst",
-                "proto","service","flag_counts","is_https","rate_src","rate_dst")
-    def __init__(self, proto:str, service:str):
-        now = time.time()
-        self.first_ts = now
-        self.last_ts  = now
-        self.src_bytes = 0    # bytes từ src->dst
-        self.dst_bytes = 0    # bytes từ dst->src
-        self.pkt_src = 0
-        self.pkt_dst = 0
-        self.proto = proto
-        self.service = service
-        self.flag_counts = defaultdict(int)  # đếm các loại flag
-        self.is_https = service == "http_443"
-        # Thêm chỉ số tốc độ truyền dữ liệu
-        self.rate_src = 0.0  # bytes/sec từ src->dst
-        self.rate_dst = 0.0  # bytes/sec từ dst->src
-
-
-    def update(self, pkt, direction_src_to_dst: bool):
-        ln = int(len(bytes(pkt)))
-        now = time.time()
-        if direction_src_to_dst:
-            self.src_bytes += ln
-            self.pkt_src   += 1
-        else:
-            self.dst_bytes += ln
-            self.pkt_dst   += 1
-        self.last_ts = now
-        self.flag_counts[tcp_flag_to_nslkdd(pkt)] += 1
-        
-        # Cập nhật tốc độ truyền dữ liệu
-        duration = max(0.001, now - self.first_ts)  # Tránh chia cho 0
-        self.rate_src = self.src_bytes / duration
-        self.rate_dst = self.dst_bytes / duration
-
-    def to_feature_row(self, key_tuple, host_counts_window) -> dict:
-        """
-        Sinh 1 hàng đặc trưng gần với NSL-KDD (tập con cốt lõi).
-        """
-        (sip, sport, dip, dport, proto) = key_tuple
-        duration = max(0.0, self.last_ts - self.first_ts)
-
-        # NSL-KDD core columns
-        row = {
-            "duration": duration,
-            "protocol_type": self.proto,
-            "service": self.service,
-            "flag": max(self.flag_counts, key=self.flag_counts.get) if self.flag_counts else "SF",
-            "src_bytes": self.src_bytes,
-            "dst_bytes": self.dst_bytes,
-            "land": int(sip == dip and sport == dport),
-            "wrong_fragment": 0,
-            "urgent": 0,
-            "hot": 0,
-            "num_failed_logins": 0,
-            "logged_in": 0,
-            "num_compromised": 0,
-            "root_shell": 0,
-            "su_attempted": 0,
-            "num_root": 0,
-            "num_file_creations": 0,
-            "num_shells": 0,
-            "num_access_files": 0,
-            "num_outbound_cmds": 0,
-            "is_host_login": 0,
-            "is_guest_login": 0,
-            # Các chỉ số dựa cửa sổ (xấp xỉ count/srv_count):
-            "count": host_counts_window.get(("dst", dip), 0),
-            "srv_count": host_counts_window.get(("dst_srv", (dip, dport)), 0),
-            # Các tỷ lệ lỗi/serror… tạm 0 (phụ thuộc trace TCP chi tiết)
-            "serror_rate": 0.0, "srv_serror_rate": 0.0, "rerror_rate": 0.0, "srv_rerror_rate": 0.0,
-            "same_srv_rate": 0.0, "diff_srv_rate": 0.0, "srv_diff_host_rate": 0.0,
-            "dst_host_count": host_counts_window.get(("dst", dip), 0),
-            "dst_host_srv_count": host_counts_window.get(("dst_srv", (dip, dport)), 0),
-            "dst_host_same_srv_rate": 0.0,
-            "dst_host_diff_srv_rate": 0.0,
-            "dst_host_same_src_port_rate": 0.0,
-            "dst_host_srv_diff_host_rate": 0.0,
-            "dst_host_serror_rate": 0.0,
-            "dst_host_srv_serror_rate": 0.0,
-            "dst_host_rerror_rate": 0.0,
-            "dst_host_srv_rerror_rate": 0.0,
-            # Các đặc trưng bổ sung
-            "rate_src": self.rate_src,
-            "rate_dst": self.rate_dst,
-            "is_https": int(self.is_https),
-        }
-        return row
 
 class IDSEngine:
-    def __init__(self, config_path='config.ini'):
+    def __init__(self, config_path: str = 'config.ini'):
         # Đọc cấu hình
         config = configparser.ConfigParser()
-        config.read(config_path)
-        
-        # Network config
+        config.read(config_path, encoding='utf-8')
+
+    # -------- Cấu hình mạng / cửa sổ --------
         self.iface = config.get('Network', 'interface')
         self.window = config.getint('Network', 'window')
         self.min_pkts = config.getint('Network', 'min_packets')
         self.min_bytes = config.getint('Network', 'min_bytes')
-        
-        # Model config
+
+    # IP cục bộ/máy chủ để phân biệt chiều lưu lượng (inbound/outbound)
+        self.local_ips = set()
+        try:
+            server_ip = config.get('Network', 'server_ip', fallback='').strip()
+            local_ips_str = config.get('Network', 'local_ips', fallback='').strip()
+            if server_ip:
+                self.local_ips.add(server_ip)
+            if local_ips_str:
+                for tok in local_ips_str.split(','):
+                    tok = tok.strip()
+                    if tok:
+                        self.local_ips.add(tok)
+        except Exception:
+            pass
+
+    # -------- Cấu hình mô hình --------
         self.model_path = config.get('Model', 'model_path')
         self.preprocess_path = config.get('Model', 'preprocess_path')
         self.alert_threshold = config.getfloat('Model', 'threshold')
-        
-        # Filtering config
+
+    # -------- Cấu hình lọc gói --------
         self.whitelist_file = config.get('Filtering', 'whitelist_file')
         self.blacklist_file = config.get('Filtering', 'blacklist_file')
         self.ignore_https = config.getboolean('Filtering', 'ignore_https', fallback=False)
-        
-        # Thiết lập logging
+
+    # Logger ghi file tấn công
         self.attack_logger = setup_logging()
-        
-        # Hàng đợi thông báo
+
+    # Hàng đợi chuyển tiếp cảnh báo ra ngoài
         self.alert_queue = queue.Queue()
-        
-        # Biến điều khiển
+
+    # Cờ trạng thái
         self.running = False
         self.sniff_thread = None
         self.predict_thread = None
-        
-        # Khởi tạo whitelist/blacklist từ file nếu có
+
+    # Nạp whitelist / blacklist từ file
         self.whitelist = set()
         self.blacklist = set()
         if os.path.exists(self.whitelist_file):
-            with open(self.whitelist_file, 'r') as f:
+            with open(self.whitelist_file, 'r', encoding='utf-8', errors='ignore') as f:
                 self.whitelist = set(line.strip() for line in f if line.strip())
         if os.path.exists(self.blacklist_file):
-            with open(self.blacklist_file, 'r') as f:
+            with open(self.blacklist_file, 'r', encoding='utf-8', errors='ignore') as f:
                 self.blacklist = set(line.strip() for line in f if line.strip())
-
-        # Thêm các tên miền tin cậy vào whitelist
+        # Bổ sung domain tin cậy
         self.whitelist.update(TRUSTED_DOMAINS)
 
-        # luồng: key = (src, sport, dst, dport, proto)
+    # Bản đồ lưu trạng thái từng luồng + lock bảo vệ
         self.flows = {}
         self.lock = threading.Lock()
 
-        # hàng đợi thống kê theo cửa sổ (để ước lượng count/srv_count)
+    # Bộ nhớ vòng để tính các chỉ số count/srv_count theo cửa sổ
         self.host_events = deque(maxlen=100000)
-        
-        # Lưu trữ các dự đoán trước đó
-        self.previous_alerts = {}  # key: flow_key, value: (count, last_time)
-        
-        # Ngưỡng số lượng gói tin TCP/s để phát hiện quét cổng
-        self.port_scan_threshold = 10
-        self.port_scan_window = {}  # {src_ip: {dst_port: count}}
-        self.port_scan_last_clean = time.time()
-        
-        # Thống kê
+
+    # Lưu lịch sử cảnh báo (giảm lặp lại ngắn hạn)
+        self.previous_alerts = {}
+
+    # Detector: quét cổng (theo dõi SYN trên nhiều cổng)
+        self.port_scan = PortScanDetector(threshold=15)
+
+    # Thống kê phục vụ UI / giám sát
         self.stats = {
             "packets_processed": 0,
             "flows_analyzed": 0,
@@ -273,54 +139,99 @@ class IDSEngine:
             "start_time": None,
             "packets_per_second": 0,
             "last_update_time": time.time(),
-            "bytes_processed": 0
+            "bytes_processed": 0,
         }
-        self.syn_flood_counter = {
-            'last_reset': time.time(),
-            'sources': defaultdict(int),
-            'targets': defaultdict(int),
-            'total_syns': 0
-        }
-        
-        # Lưu 100 cảnh báo gần nhất để hiển thị trên giao diện
+
+    # Detector: SYN Flood (toàn cục + phân tán)
+        self.syn_flood_global = SynFloodGlobalDetector(total_threshold=1000, reset_seconds=10)
+        self.syn_flood_dist = SynFloodDistributedDetector()
+    # Detector: UDP Flood
+        self.udp_flood_global = UDPGlobalDetector(total_threshold=1500, reset_seconds=10)
+        self.udp_flood_dist = UDPDistributedDetector()
+    # Detector: ICMP Flood
+        self.icmp_flood_global = ICMPGlobalDetector(total_threshold=1200, reset_seconds=10)
+        self.icmp_flood_dist = ICMPDistributedDetector()
+
+    # Danh sách cảnh báo gần đây cho dashboard
         self.recent_alerts = deque(maxlen=100)
 
-    def load_model(self):
-        """Tải mô hình và pipeline tiền xử lý"""
-        print("[*] Loading model and preprocessing pipeline...")
+    # Packet filter (gom các logic lọc gói ra module riêng)
+        self.packet_filter = PacketFilter(
+            ignore_https=self.ignore_https,
+            whitelist=self.whitelist,
+            blacklist=self.blacklist,
+            port_scan_detector=self.port_scan,
+            attack_logger=self.attack_logger,
+            alert_queue=self.alert_queue,
+            recent_alerts=self.recent_alerts,
+            stats=self.stats,
+        )
+
+    # Trạng thái mô hình / pipeline tiền xử lý
+        self.model_type = None  # 'dl' hoặc 'ml'
+        self.model = None       # Keras model hoặc sklearn estimator
+        self.preprocess = None  # sklearn ColumnTransformer
+
+    # -------- Hot reload configuration (áp dụng thay đổi động) ---------
+    def apply_config(self, live_cfg):
+        """Update runtime parameters from LiveConfig without restarting threads."""
         try:
-            # Kiểm tra xem thư mục chứa mô hình có tồn tại không
-            model_dir = os.path.dirname(self.model_path)
-            if model_dir and not os.path.exists(model_dir):
-                os.makedirs(model_dir, exist_ok=True)
-                
-            # Nếu mô hình chưa tồn tại, cảnh báo người dùng
-            if not os.path.exists(self.model_path):
-                print(f"[!] Warning: Model file {self.model_path} does not exist")
-                return False
-                
-            if not os.path.exists(self.preprocess_path):
-                print(f"[!] Warning: Preprocess file {self.preprocess_path} does not exist")
-                return False
-                
-            self.preprocess = joblib.load(self.preprocess_path)
-            self.model = tf.keras.models.load_model(self.model_path)
-            print("[+] Model loaded successfully")
+            # Cập nhật tham số cửa sổ / ngưỡng lọc tối thiểu
+            self.window = live_cfg.getint('Network', 'window', fallback=self.window)
+            self.min_pkts = live_cfg.getint('Network', 'min_packets', fallback=self.min_pkts)
+            self.min_bytes = live_cfg.getint('Network', 'min_bytes', fallback=self.min_bytes)
+
+            # Cập nhật ngưỡng cảnh báo & đường dẫn mô hình
+            new_model_path = live_cfg.get('Model', 'model_path', fallback=self.model_path)
+            new_pre_path = live_cfg.get('Model', 'preprocess_path', fallback=self.preprocess_path)
+            self.alert_threshold = live_cfg.getfloat('Model', 'threshold', fallback=self.alert_threshold)
+
+            # Nếu đổi file mô hình / preprocessing => tải lại
+            if (new_model_path != self.model_path) or (new_pre_path != self.preprocess_path):
+                self.model_path = new_model_path
+                self.preprocess_path = new_pre_path
+                print('[Config] Model path changed → reloading model...')
+                self.load_model()
+
+            # Cập nhật tham số lọc HTTPS động
+            self.ignore_https = live_cfg.getboolean('Filtering', 'ignore_https', fallback=self.ignore_https)
+            if hasattr(self, 'packet_filter'):
+                self.packet_filter.ignore_https = self.ignore_https
+
+            print(f"[Config] IDS updated: window={self.window} min_pkts={self.min_pkts} min_bytes={self.min_bytes} threshold={self.alert_threshold}")
+        except Exception as e:
+            print('[Config] IDS apply_config error:', e)
+
+    def _is_local_ip(self, ip: str) -> bool:
+        return ip in self.local_ips
+
+    def load_model(self) -> bool:
+        print("[*] Đang tải mô hình & pipeline tiền xử lý...")
+        try:
+            self.preprocess, self.model, self.model_type, info = load_model_and_preprocess(
+                self.preprocess_path, self.model_path
+            )
+            path = info.get('path')
+            if self.model_type == 'ml':
+                print(f"[+] Đã tải mô hình ML từ {path} (best: {info.get('best_ml_name')})")
+            else:
+                print(f"[+] Đã tải mô hình DL từ {path}")
             return True
         except Exception as e:
-            print(f"[!] Error loading model: {e}")
+            print(f"[!] Lỗi tải mô hình: {e}")
             return False
+
+    def _predict_probabilities(self, X: np.ndarray) -> np.ndarray:
+        return predict_probabilities(self.model, self.model_type, X)
 
     def _flow_key(self, pkt):
         sip, dip = pkt[IP].src, pkt[IP].dst
         sport = pkt[TCP].sport if pkt.haslayer(TCP) else (pkt[UDP].sport if pkt.haslayer(UDP) else 0)
         dport = pkt[TCP].dport if pkt.haslayer(TCP) else (pkt[UDP].dport if pkt.haslayer(UDP) else 0)
         proto = proto_name(pkt)
-        # dùng thứ tự src->dst cố định
         return (sip, sport, dip, dport, proto)
 
     def _direction_src_to_dst(self, pkt, key):
-        # key theo chiều src->dst
         sip, sport, dip, dport, _ = key
         ps, pd = None, None
         if pkt.haslayer(TCP):
@@ -330,15 +241,12 @@ class IDSEngine:
         return (pkt[IP].src == sip) and (ps == sport) and (pkt[IP].dst == dip) and (pd == dport)
 
     def _update_host_window(self, pkt):
-        # Lưu sự kiện đích để thống kê count theo cửa sổ
         now = time.time()
         dip = pkt[IP].dst
-        dport = (pkt[TCP].dport if pkt.haslayer(TCP) else
-                 pkt[UDP].dport if pkt.haslayer(UDP) else 0)
+        dport = (pkt[TCP].dport if pkt.haslayer(TCP) else pkt[UDP].dport if pkt.haslayer(UDP) else 0)
         self.host_events.append((now, dip, dport))
 
     def _build_host_counts(self):
-        # Tính count/srv_count trong cửa sổ self.window giây gần nhất
         t0 = time.time() - self.window
         dst_count = defaultdict(int)
         dst_srv_count = defaultdict(int)
@@ -350,269 +258,60 @@ class IDSEngine:
         counts.update(dst_count)
         counts.update(dst_srv_count)
         return counts
-    
-    def _is_in_whitelist(self, ip):
-        """Kiểm tra xem IP có trong whitelist không"""
-        return ip in self.whitelist
-    
-    def _is_in_blacklist(self, ip):
-        """Kiểm tra xem IP có trong blacklist không"""
-        return ip in self.blacklist
-    
-    def _should_ignore_https(self, key, state):
-        """
-        Xác định xem có nên bỏ qua cảnh báo cho kết nối HTTPS không
-        dựa trên các tiêu chí của lưu lượng web bình thường
-        """
-        sip, sport, dip, dport, proto = key
-        
-        # Nếu là HTTPS (cổng 443)
-        if dport == 443 or sport == 443:
-            # Kiểm tra nếu địa chỉ IP thuộc các dải IP của Google, Cloudflare, v.v.
-            google_ranges = ['74.125.', '142.250.', '64.233.', '216.58.', '172.217.']
-            cloudflare_ranges = ['104.18.', '104.19.', '104.20.', '172.65.', '146.75.']
-            
-            for ip in [sip, dip]:
-                for prefix in google_ranges:
-                    if ip.startswith(prefix):
-                        return True
-                for prefix in cloudflare_ranges:
-                    if ip.startswith(prefix):
-                        return True
-            
-            # Kiểm tra thêm các mẫu lưu lượng HTTPS thông thường
-            # Lưu lượng web thường có các đặc điểm:
-            # 1. Thời lượng kết nối hợp lý
-            # 2. Tỷ lệ gửi/nhận hợp lý (nhận nhiều hơn gửi)
-            if (state.last_ts - state.first_ts < 15 and  # Thời lượng dưới 15s
-                state.src_bytes < 100000 and             # Dưới 100KB gửi
-                state.dst_bytes < 1000000):              # Dưới 1MB nhận
-                
-                # Kiểm tra các flag thông thường của web browsing
-                if "SF" in state.flag_counts or "S0" in state.flag_counts:
-                    # Đặc điểm truyền dữ liệu: client gửi ít, server gửi nhiều
-                    if state.src_bytes == 0 or (state.dst_bytes > 0 and state.src_bytes / state.dst_bytes < 0.2):
-                        return True
-                        
-            # Xử lý riêng cho các kết nối TLS keep-alive
-            if (state.pkt_src + state.pkt_dst < 10 and  # Số lượng gói tin nhỏ
-                state.src_bytes < 1000 and             # Lưu lượng nhỏ
-                state.dst_bytes < 1000):
-                return True
-                
-        return False
-
-    def _check_port_scan(self, pkt):
-        """Kiểm tra dấu hiệu quét cổng TCP"""
-        if not pkt.haslayer(TCP):
-            return False
-        
-        now = time.time()
-        # Dọn dẹp cửa sổ quét cổng cũ (mỗi 60s)
-        if now - self.port_scan_last_clean > 60:
-            self.port_scan_window = {}
-            self.port_scan_last_clean = now
-            
-        src_ip = pkt[IP].src
-        dst_ip = pkt[IP].dst
-        dst_port = pkt[TCP].dport
-        
-        # Bỏ qua nếu src_ip là IP tin cậy
-        google_ranges = ['74.125.', '142.250.', '64.233.', '216.58.', '172.217.']
-        cloudflare_ranges = ['104.18.', '104.19.', '104.20.', '172.65.', '146.75.']
-        
-        for prefix in google_ranges + cloudflare_ranges:
-            if src_ip.startswith(prefix):
-                return False
-        
-        # Chỉ quan tâm đến các gói SYN (dấu hiệu quét cổng)
-        if pkt[TCP].flags & 0x02:  # SYN flag
-            if src_ip not in self.port_scan_window:
-                self.port_scan_window[src_ip] = defaultdict(int)
-            
-            # Đếm số lượng cổng đích khác nhau
-            self.port_scan_window[src_ip][dst_port] += 1
-            
-            # Tăng ngưỡng lên 15 (thay vì 10) để giảm cảnh báo giả
-            if len(self.port_scan_window[src_ip]) > 15:
-                port_list = list(self.port_scan_window[src_ip].keys())
-                alert_msg = f"PORT SCAN DETECTED from {src_ip} to {dst_ip} (ports: {port_list[:5]}...)"
-                now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
-                print(f"[{now_str}] {alert_msg}")
-                self.attack_logger.info(alert_msg)
-                
-                # Thêm vào hàng đợi thông báo
-                alert_data = {
-                    "type": "port_scan",
-                    "src_ip": src_ip,
-                    "dst_ip": dst_ip,
-                    "ports": port_list[:10],
-                    "time": now_str,
-                    "message": alert_msg
-                }
-                self.alert_queue.put(alert_data)
-                self.recent_alerts.append(alert_data)
-                self.stats["alerts_generated"] += 1
-                
-                # Reset lại để không cảnh báo liên tục
-                self.port_scan_window[src_ip] = {}
-                return True
-        
-        return False
-
-    def _should_process_pkt(self, pkt):
-        """Kiểm tra xem gói tin có nên được xử lý hay không (lọc DNS/QUIC và lưu lượng nhỏ)"""
-        if not pkt.haslayer(IP):
-            return False
-
-        # Kiểm tra cấu hình bỏ qua HTTPS
-        if hasattr(self, 'ignore_https') and self.ignore_https:
-            if pkt.haslayer(TCP):
-                dport = pkt[TCP].dport
-                sport = pkt[TCP].sport
-                if dport == 443 or sport == 443:
-                    return False
-                
-        # Kiểm tra quét cổng
-        if self._check_port_scan(pkt):
-            return False  # Đã xử lý ở hàm _check_port_scan
-        
-        # Lấy địa chỉ IP
-        src_ip = pkt[IP].src
-        dst_ip = pkt[IP].dst
-        
-        # Kiểm tra whitelist/blacklist
-        if self._is_in_whitelist(src_ip) or self._is_in_whitelist(dst_ip):
-            return False
-        
-        if self._is_in_blacklist(src_ip) or self._is_in_blacklist(dst_ip):
-            alert_msg = f"BLACKLISTED IP DETECTED: {src_ip} -> {dst_ip}"
-            now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
-            print(f"[{now_str}] {alert_msg}")
-            self.attack_logger.info(alert_msg)
-            
-            # Thêm vào hàng đợi thông báo
-            alert_data = {
-                "type": "blacklist",
-                "src_ip": src_ip,
-                "dst_ip": dst_ip,
-                "time": now_str,
-                "message": alert_msg
-            }
-            self.alert_queue.put(alert_data)
-            self.recent_alerts.append(alert_data)
-            self.stats["alerts_generated"] += 1
-            return False
-        
-        # Bỏ qua các gói UDP phổ biến từ DNS và QUIC
-        if pkt.haslayer(UDP):
-            dport = pkt[UDP].dport
-            sport = pkt[UDP].sport
-            # Lọc DNS (port 53) và QUIC (thường dùng 443/UDP)
-            if dport == 53 or sport == 53 or dport == 443 or sport == 443:
-                return False
-        
-        # Kiểm tra kích thước gói tin quá nhỏ
-        if len(pkt) < 40:  # Kích thước tối thiểu cho IP + TCP/UDP header
-            return False
-            
-        # Nếu cả hai IP đều là private, có thể là lưu lượng nội bộ an toàn
-        if is_private_ip(src_ip) and is_private_ip(dst_ip):
-            # Vẫn xử lý nhưng sẽ cân nhắc khi cảnh báo
-            pass
-            
-        # Xử lý các kết nối HTTPS thông thường (cổng 443)
-        if pkt.haslayer(TCP):
-            dport = pkt[TCP].dport
-            sport = pkt[TCP].sport
-            if dport == 443 or sport == 443:
-                # Sẽ vẫn thu thập nhưng áp dụng logic đặc biệt khi dự đoán
-                pass
-        
-        return True
 
     def _packet_cb(self, pkt):
-        """Callback xử lý mỗi gói tin bắt được"""
         try:
-            # Kiểm tra nếu không phải là gói tin IP
             if not pkt.haslayer(IP):
                 return
-                
-            # Cập nhật thống kê
+
+            # Thống kê cơ bản
             self.stats["packets_processed"] += 1
-            pkt_size = len(pkt)
-            self.stats["bytes_processed"] += pkt_size
-            
-            # Cập nhật packets_per_second mỗi giây
+            self.stats["bytes_processed"] += len(pkt)
+
             now = time.time()
             if now - self.stats["last_update_time"] >= 1:
-                elapsed = now - self.stats["last_update_time"]
-                if elapsed > 0:
-                    self.stats["packets_per_second"] = int(self.stats["packets_processed"] / 
-                                                        (now - self.stats["start_time"]))
+                if self.stats["start_time"]:
+                    self.stats["packets_per_second"] = int(self.stats["packets_processed"] / (now - self.stats["start_time"]))
                 self.stats["last_update_time"] = now
-            
-            # Theo dõi SYN Flood - đặt trước _should_process_pkt để bắt tất cả gói SYN
-            if pkt.haslayer(TCP) and pkt[TCP].flags & 0x02:  # SYN flag
-                src_ip = pkt[IP].src
-                dst_ip = pkt[IP].dst
-                
-                # Bỏ qua các gói SYN từ nguồn đáng tin cậy
-                if not self._is_trusted_source(src_ip):
-                    # Cập nhật bộ đếm
-                    # Reset bộ đếm mỗi 10 giây
-                    if now - self.syn_flood_counter['last_reset'] > 10:
-                        self.syn_flood_counter = {
-                            'last_reset': now,
-                            'sources': defaultdict(int),
-                            'targets': defaultdict(int),
-                            'total_syns': 0
-                        }
-                        
-                    self.syn_flood_counter['sources'][src_ip] += 1
-                    self.syn_flood_counter['targets'][dst_ip] += 1
-                    self.syn_flood_counter['total_syns'] += 1
-                    
-                    # Phát hiện SYN Flood dựa trên số lượng gói SYN toàn cục
-                    if self.syn_flood_counter['total_syns'] > 1000:  # Ngưỡng có thể điều chỉnh
-                        # Kiểm tra thêm: nguồn phải gửi ít nhất 25% tổng số SYN
-                        main_source = max(self.syn_flood_counter['sources'].items(), key=lambda x: x[1])
-                        main_target = max(self.syn_flood_counter['targets'].items(), key=lambda x: x[1])
-                        
-                        if main_source[1] >= self.syn_flood_counter['total_syns'] * 0.25:
-                            # Ghi log và thông báo
-                            now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
-                            alert_msg = f"ALERT SYN_Flood proto=tcp {main_source[0]}:* -> {main_target[0]}:* prob=1.000 window={self.window}s"
-                            detail_msg = f" [{main_source[1]} SYNs from source, {self.syn_flood_counter['total_syns']} total]"
-                            print(f"[{now_str}] {alert_msg}{detail_msg}")
-                            self.attack_logger.info(alert_msg)  # Chỉ ghi log cơ bản vào file
-                            
-                            # Thêm vào hàng đợi thông báo
-                            alert_data = {
-                                "type": "syn_flood",
-                                "src_ip": main_source[0],
-                                "src_port": "*",
-                                "dst_ip": main_target[0],
-                                "dst_port": "*",
-                                "proto": "tcp",
-                                "probability": 1.0,
-                                "time": now_str,
-                                "message": alert_msg,
-                                "syn_count": main_source[1],
-                                "total_syns": self.syn_flood_counter['total_syns']
-                            }
-                            self.alert_queue.put(alert_data)
-                            self.recent_alerts.append(alert_data)
-                            self.stats["alerts_generated"] += 1
-                        
-                        # Reset counter để tránh cảnh báo liên tục
-                        self.syn_flood_counter['total_syns'] = 0
-            
-            # Kiểm tra xem gói tin có nên được xử lý chi tiết không
-            if not self._should_process_pkt(pkt):
+
+            # Flood detectors (toàn cục) – chạy trước để phát hiện sớm tấn công volumetric
+            # SYN flood: chỉ xét gói TCP có cờ SYN
+            if pkt.haslayer(TCP) and pkt[TCP].flags & 0x02:
+                self.syn_flood_global.process(
+                    pkt,
+                    is_trusted_source_fn=self._is_trusted_source,
+                    window_seconds=self.window,
+                    attack_logger=self.attack_logger,
+                    alert_queue=self.alert_queue,
+                    recent_alerts=self.recent_alerts,
+                    stats=self.stats,
+                )
+            # UDP flood
+            self.udp_flood_global.process(
+                pkt,
+                is_trusted_source_fn=self._is_trusted_source,
+                window_seconds=self.window,
+                attack_logger=self.attack_logger,
+                alert_queue=self.alert_queue,
+                recent_alerts=self.recent_alerts,
+                stats=self.stats,
+            )
+            # ICMP flood
+            self.icmp_flood_global.process(
+                pkt,
+                is_trusted_source_fn=self._is_trusted_source,
+                window_seconds=self.window,
+                attack_logger=self.attack_logger,
+                alert_queue=self.alert_queue,
+                recent_alerts=self.recent_alerts,
+                stats=self.stats,
+            )
+
+            # Bước lọc gói trước khi cập nhật trạng thái luồng
+            if not self.packet_filter.should_process(pkt):
                 return
-                
-            # Xử lý luồng
+
+            # Cập nhật hoặc khởi tạo FlowState
             key = self._flow_key(pkt)
             with self.lock:
                 if key not in self.flows:
@@ -621,222 +320,113 @@ class IDSEngine:
                 direction = self._direction_src_to_dst(pkt, key)
                 state.update(pkt, direction)
                 self._update_host_window(pkt)
-                
+
         except Exception as e:
-            # Bắt lỗi chi tiết hơn và tránh in thông báo lỗi cho những vấn đề đơn giản
             if isinstance(e, (AttributeError, IndexError)) and ('sport' in str(e) or 'dport' in str(e)):
-                # Lỗi thường gặp khi gói tin không có trường sport/dport - bỏ qua im lặng
                 pass
             else:
-                # Ghi log lỗi quan trọng
                 print(f"CB error: {type(e).__name__}: {str(e)}")
 
-    def _is_trusted_source(self, ip):
-        """Kiểm tra xem IP có phải là nguồn tin cậy không"""
-        # Kiểm tra IP có trong whitelist không
-        if ip in self.whitelist:
-            return True
-            
-        # Kiểm tra các dải IP tin cậy
-        trusted_prefixes = [
-            '74.125.', '142.250.', '64.233.', '216.58.', '172.217.',  # Google
-            '104.18.', '104.19.', '104.20.', '172.65.', '146.75.',    # Cloudflare
-            '52.', '54.', '35.', '18.',                               # AWS
-            '157.240.', '69.171.', '31.13.',                          # Facebook
-        ]
-        
-        for prefix in trusted_prefixes:
-            if ip.startswith(prefix):
-                return True
-                
-        # Các máy chủ nội bộ trong mạng LAN cũng có thể tin cậy
-        if is_private_ip(ip):
-            # Tùy chọn: có thể đặt thành False nếu bạn muốn phát hiện cả tấn công nội bộ
-            return False
-                
-        return False
+    def _is_trusted_source(self, ip: str) -> bool:
+        return _h_is_trusted_source(ip, getattr(self, 'local_ips', set()), self.whitelist)
 
-    def _post_process_alert(self, key, prob, state):
-        """
-        Hậu xử lý để quyết định có nên cảnh báo không 
-        dựa trên heuristic và lịch sử
-        """
-        sip, sport, dip, dport, proto = key
-        
-        # Nếu là kết nối HTTPS thông thường, áp dụng kiểm tra bổ sung
-        if self._should_ignore_https(key, state):
-            return False
-            
-        # Kiểm tra tần suất lưu lượng (DoS thường có rate cao)
-        if state.rate_src > 1000000 or state.rate_dst > 1000000:  # >1MB/s
-            return True  # Cảnh báo DoS có độ tin cậy cao
-            
-        # Kiểm tra lịch sử cảnh báo cho luồng tương tự
-        flow_id = f"{sip}-{dip}-{proto}"
-        now = time.time()
-        
-        # Nếu đã cảnh báo gần đây, giảm số lượng cảnh báo lặp
-        if flow_id in self.previous_alerts:
-            count, last_time = self.previous_alerts[flow_id]
-            # Nếu cảnh báo trong 60 giây gần đây
-            if now - last_time < 60:
-                # Chỉ cảnh báo lại nếu prob tăng đáng kể
-                if count > 3 and prob < 0.95:
-                    return False
-                self.previous_alerts[flow_id] = (count + 1, now)
-            else:
-                # Quá 60s, đặt lại bộ đếm
-                self.previous_alerts[flow_id] = (1, now)
-        else:
-            self.previous_alerts[flow_id] = (1, now)
-            
-        # Kiểm tra ngoại lệ cho HTTPS với các website phổ biến
-        if dport == 443 or sport == 443:
-            # Tăng ngưỡng cảnh báo cho HTTPS lên cao hơn (0.95 thay vì 0.9)
-            return prob > 0.95
-            
-        # Kiểm tra kết nối nội bộ
-        if is_private_ip(sip) and is_private_ip(dip):
-            # Yêu cầu xác suất cao hơn cho cảnh báo nội bộ
-            return prob > 0.85
-            
-        return True
+    def _post_process_alert(self, key, prob, state) -> bool:
+        return _h_post_process_alert(key, prob, state, self.previous_alerts, self.window)
 
     def _predict_and_alert(self):
-        """Luồng phân tích và cảnh báo"""
         while self.running:
             time.sleep(self.window)
             with self.lock:
                 if not self.flows:
                     continue
-                
-                # Lọc luồng có đủ số lượng gói tin và byte để phân tích
+
+                # Lọc các luồng chưa đủ số gói / bytes tối thiểu
                 filtered_flows = {}
                 for k, state in list(self.flows.items()):
                     total_pkts = state.pkt_src + state.pkt_dst
                     total_bytes = state.src_bytes + state.dst_bytes
                     if total_pkts >= self.min_pkts and total_bytes >= self.min_bytes:
                         filtered_flows[k] = state
-                
+
                 if not filtered_flows:
                     self.flows.clear()
                     continue
-                    
+
                 self.stats["flows_analyzed"] += len(filtered_flows)
-                
-                # === PHÁT HIỆN TẤN CÔNG PHÂN TÁN ===
-                # Đếm số luồng từ mỗi IP nguồn và đích
-                source_ip_counts = defaultdict(int)
-                target_ip_counts = defaultdict(int)
-                source_ip_pkts = defaultdict(int)
-                syn_flood_candidates = defaultdict(list)
-                
-                for k, state in filtered_flows.items():
-                    sip, sport, dip, dport, proto = k
-                    source_ip_counts[sip] += 1
-                    target_ip_counts[dip] += 1
-                    source_ip_pkts[sip] += state.pkt_src + state.pkt_dst
-                    
-                    # Kiểm tra đặc điểm của SYN Flood
-                    if proto == "tcp" and "S0" in state.flag_counts:
-                        syn_flood_candidates[sip].append((k, state))
-                
-                # Phát hiện SYN Flood phân tán
-                now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
-                for src_ip, candidates in syn_flood_candidates.items():
-                    # Nếu một nguồn có nhiều hơn 3 luồng SYN hoặc tổng gói tin > 50
-                    if len(candidates) >= 3 or source_ip_pkts[src_ip] > 50:
-                        # Tạo tập hợp các IP đích
-                        targets = set(k[2] for k, _ in candidates)
-                        ports = set(k[3] for k, _ in candidates)
-                        
-                        # Nếu gửi đến nhiều IP đích hoặc nhiều cổng khác nhau
-                        if len(targets) >= 2 or len(ports) >= 5:
-                            # Đây có khả năng là SYN Flood
-                            target_str = ", ".join(list(targets)[:3])
-                            if len(targets) > 3:
-                                target_str += f" và {len(targets)-3} IP khác"
-                                
-                            alert_msg = f"ALERT SYN_Flood proto=tcp {src_ip}:* -> [{target_str}]:* prob=1.000 window={self.window}s"
-                            print(f"[{now}] {alert_msg}")
-                            self.attack_logger.info(alert_msg)
-                            
-                            # Thêm vào hàng đợi thông báo
-                            alert_data = {
-                                "type": attack_type.lower(),
-                                "src_ip": src_ip,
-                                "src_port": "*",
-                                "dst_ip": target_str,
-                                "dst_port": "*",
-                                "proto": "tcp",
-                                "probability": 1.0,
-                                "time": now,
-                                "message": alert_msg,
-                                "bytes_src": sum(st.src_bytes for _, st in candidates),
-                                "bytes_dst": sum(st.dst_bytes for _, st in candidates),
-                                "rate_src": sum(st.rate_src for _, st in candidates),
-                                "rate_dst": sum(st.rate_dst for _, st in candidates),
-                                "duration": self.window,
-                                "flow_count": len(candidates),
-                                "total_pkts": sum(st.pkt_src + st.pkt_dst for _, st in candidates)
-                            }
-                            self.alert_queue.put(alert_data)
-                            self.recent_alerts.append(alert_data)
-                            self.stats["alerts_generated"] += 1
-                
-                # === PHÂN TÍCH LUỒNG THÔNG THƯỜNG ===
-                # Tiếp tục với phân tích các luồng riêng lẻ
+
+                # Chạy flood detector phân tán trên tập luồng đã đủ điều kiện
+                self.syn_flood_dist.process_aggregated(
+                    filtered_flows,
+                    is_local_ip_fn=self._is_local_ip,
+                    window_seconds=self.window,
+                    attack_logger=self.attack_logger,
+                    alert_queue=self.alert_queue,
+                    recent_alerts=self.recent_alerts,
+                    stats=self.stats,
+                )
+                self.udp_flood_dist.process_aggregated(
+                    filtered_flows,
+                    is_local_ip_fn=self._is_local_ip,
+                    window_seconds=self.window,
+                    attack_logger=self.attack_logger,
+                    alert_queue=self.alert_queue,
+                    recent_alerts=self.recent_alerts,
+                    stats=self.stats,
+                )
+                self.icmp_flood_dist.process_aggregated(
+                    filtered_flows,
+                    is_local_ip_fn=self._is_local_ip,
+                    window_seconds=self.window,
+                    attack_logger=self.attack_logger,
+                    alert_queue=self.alert_queue,
+                    recent_alerts=self.recent_alerts,
+                    stats=self.stats,
+                )
+
+                # Chuyển FlowState -> vector đặc trưng
                 host_counts = self._build_host_counts()
                 rows, keys, states = [], [], []
                 for k, st in list(filtered_flows.items()):
                     rows.append(st.to_feature_row(k, host_counts))
                     keys.append(k)
                     states.append(st)
-                
-                # Bỏ qua nếu không có dữ liệu sau khi lọc
+
                 if not rows:
                     self.flows.clear()
                     continue
-                    
-                df = pd.DataFrame(rows)
 
-                # Các cột còn thiếu so với preprocess sẽ được OneHot/Scaler bỏ qua
-                # (OneHot handle_unknown='ignore'); với số thì thiếu sẽ không có scaler.
-                # Đảm bảo đủ cột numeric cốt lõi
-                for col in ["duration","src_bytes","dst_bytes","count","srv_count",
-                            "dst_host_count","dst_host_srv_count"]:
+                df = pd.DataFrame(rows)
+                for col in ["duration","src_bytes","dst_bytes","count","srv_count","dst_host_count","dst_host_srv_count"]:
                     if col not in df:
                         df[col] = 0.0
 
                 X = self.preprocess.transform(df)
-                # dự đoán xác suất (nếu model sigmoid 1 output)
-                probs = self.model.predict(X, verbose=0).ravel()
+                probs = self._predict_probabilities(X).ravel()
                 preds = (probs >= self.alert_threshold).astype(int)
 
-                # In cảnh báo sau khi áp dụng hậu xử lý
-                for i, (k, p, pr, st) in enumerate(zip(keys, preds, probs, states)):
+                # Phát cảnh báo (nếu vượt ngưỡng + qua hậu xử lý)
+                for k, p, pr, st in zip(keys, preds, probs, states):
                     if p == 1 and self._post_process_alert(k, pr, st):
                         sip, sport, dip, dport, proto = k
-                        
-                        # === XÁC ĐỊNH LOẠI TẤN CÔNG ===
                         attack_type = self._determine_attack_type(k, st)
-                        
-                        alert_msg = f"ALERT {attack_type} proto={proto} {sip}:{sport} -> {dip}:{dport} prob={pr:.3f} window={self.window}s"
-                        print(f"[{now}] {alert_msg}")
-                        
-                        # Ghi log vào file
+                        alert_msg = (
+                            f"ALERT {attack_type} proto={proto} {sip}:{sport} -> {dip}:{dport} "
+                            f"prob={pr:.3f} window={self.window}s"
+                        )
+                        now_str_local = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
+                        print(f"[{now_str_local}] {alert_msg}")
                         self.attack_logger.info(alert_msg)
-                        
-                        # Thêm vào hàng đợi thông báo và danh sách cảnh báo gần đây
+
                         alert_data = {
                             "type": attack_type.lower(),
+                            "detail_type": attack_type,
                             "src_ip": sip,
                             "src_port": sport,
                             "dst_ip": dip,
                             "dst_port": dport,
                             "proto": proto,
                             "probability": float(pr),
-                            "time": now,
+                            "time": now_str_local,
                             "message": alert_msg,
                             "bytes_src": st.src_bytes,
                             "bytes_dst": st.dst_bytes,
@@ -844,129 +434,71 @@ class IDSEngine:
                             "rate_dst": st.rate_dst,
                             "duration": st.last_ts - st.first_ts,
                             "pkt_src": st.pkt_src,
-                            "pkt_dst": st.pkt_dst
+                            "pkt_dst": st.pkt_dst,
                         }
                         self.alert_queue.put(alert_data)
                         self.recent_alerts.append(alert_data)
                         self.stats["alerts_generated"] += 1
 
-                # reset bộ đếm sau mỗi cửa sổ
+                # Reset toàn bộ state để chuẩn bị cửa sổ kế tiếp
                 self.flows.clear()
 
-    def _determine_attack_type(self, key, state):
-        """Xác định loại tấn công dựa trên đặc điểm luồng mạng"""
-        sip, sport, dip, dport, proto = key
-        
-        # Phát hiện SYN Flood
-        if proto == "tcp" and "S0" in state.flag_counts:
-            # Kiểm tra cổng đích = 0 (dấu hiệu của hping3 --flood)
-            if dport == 0 or state.flag_counts["S0"] > 3:
-                return "SYN_Flood"
-        
-        # Tính toán tốc độ gói tin (packets per second)
-        duration = max(0.1, state.last_ts - state.first_ts)  # Tránh chia cho 0
-        pkt_rate = (state.pkt_src + state.pkt_dst) / duration
-        
-        # Phát hiện DoS dựa trên tốc độ gói tin hoặc tốc độ dữ liệu
-        if pkt_rate > 50 or state.rate_src > 500000 or state.rate_dst > 500000:
-            # Kiểm tra các loại DoS cụ thể dựa trên flag TCP
-            if proto == "tcp":
-                if "R" in state.flag_counts and state.flag_counts["R"] > 3:
-                    return "RST_Flood"
-                elif "F" in state.flag_counts and state.flag_counts["F"] > 3:
-                    return "FIN_Flood"
-                elif "P" in state.flag_counts and pkt_rate > 100:
-                    return "HTTP_Flood"
-            
-            # Phát hiện UDP Flood
-            if proto == "udp" and pkt_rate > 100:
-                return "UDP_Flood"
-                
-            # Nếu không phải loại cụ thể nào, chỉ ghi là DoS
-            return "DoS"
-            
-        # Phát hiện Port Scan
-        if proto == "tcp" and state.pkt_src > 3 and state.pkt_dst < 2:
-            if "S0" in state.flag_counts or "REJ" in state.flag_counts:
-                return "Port_Scan"
-        
-        # Phát hiện Brute Force (nhiều kết nối đến cổng xác thực)
-        auth_ports = [22, 23, 3389, 5900, 21, 25, 110, 143]
-        if dport in auth_ports and state.pkt_src > 10:
-            return "Brute_Force"
-        
-        # Mặc định là "Attack" chung
-        return "Attack"
+    def _determine_attack_type(self, key, state) -> str:
+        return _h_determine_attack_type(key, state)
 
-    def start(self):
-        """Bắt đầu IDS"""
+    def start(self) -> bool:
         if self.running:
             return False
-            
-        if not hasattr(self, 'model') or not hasattr(self, 'preprocess'):
+        if not hasattr(self, 'model') or not hasattr(self, 'preprocess') or self.model is None or self.preprocess is None:
             if not self.load_model():
                 return False
-                
+
         self.running = True
         self.stats["start_time"] = time.time()
-        
-        # Bắt đầu luồng dự đoán
-        self.predict_thread = threading.Thread(target=self._predict_and_alert)
-        self.predict_thread.daemon = True
+
+        self.predict_thread = threading.Thread(target=self._predict_and_alert, daemon=True)
         self.predict_thread.start()
-        
-        # Bắt đầu luồng bắt gói tin
+
         def start_sniffing():
             print(f"[*] Sniffing on {self.iface}...")
-            sniff(iface=self.iface, prn=self._packet_cb, store=False, 
-                  stop_filter=lambda x: not self.running)
-                  
-        self.sniff_thread = threading.Thread(target=start_sniffing)
-        self.sniff_thread.daemon = True
+            sniff(iface=self.iface, prn=self._packet_cb, store=False, stop_filter=lambda x: not self.running)
+
+        self.sniff_thread = threading.Thread(target=start_sniffing, daemon=True)
         self.sniff_thread.start()
-        
+
         print(f"[*] IDS started on {self.iface} with window={self.window}s, threshold={self.alert_threshold}")
         return True
-        
+
     def stop(self):
-        """Dừng IDS"""
         if not self.running:
             return
-            
         self.running = False
-        
-        # Đợi luồng dự đoán kết thúc
         if self.predict_thread and self.predict_thread.is_alive():
             self.predict_thread.join(timeout=2)
-            
-        # Luồng sniff sẽ tự dừng nhờ stop_filter
         print("[*] IDS stopped")
-        
+
     def get_stats(self):
-        """Lấy thống kê hiện tại"""
         stats = self.stats.copy()
         if stats["start_time"]:
             stats["uptime"] = time.time() - stats["start_time"]
         else:
             stats["uptime"] = 0
         return stats
-        
+
     def get_recent_alerts(self):
-        """Lấy danh sách các cảnh báo gần đây"""
         return list(self.recent_alerts)
-        
-    def get_next_alert(self, timeout=0.1):
-        """Lấy cảnh báo tiếp theo từ hàng đợi, trả về None nếu không có"""
+
+    def get_next_alert(self, timeout: float = 0.1):
         try:
             return self.alert_queue.get(timeout=timeout)
         except queue.Empty:
             return None
 
+
 # Singleton instance
 _ids_instance = None
 
-def get_ids_instance(config_path='config.ini'):
-    """Lấy hoặc tạo instance IDSEngine"""
+def get_ids_instance(config_path: str = 'config.ini') -> IDSEngine:
     global _ids_instance
     if _ids_instance is None:
         _ids_instance = IDSEngine(config_path)

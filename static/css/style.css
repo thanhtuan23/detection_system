@@ -51,3 +51,53 @@
     background-color: #dc3545;  /* Tất cả dùng màu đỏ */
     color: white;
 }
+
+/* Vietnamese UI enhancements */
+body {
+    font-family: 'Segoe UI', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+    letter-spacing: 0.2px;
+}
+
+table.table tbody tr:hover {
+    background-color: #fff6f6;
+}
+
+.card-header.bg-danger {
+    background: linear-gradient(90deg, #c82333 0%, #dc3545 60%, #e4606d 100%);
+}
+
+.card-header.bg-primary {
+    background: linear-gradient(90deg, #0d6efd 0%, #0b5ed7 60%, #5390f5 100%);
+}
+
+.card-header.bg-info {
+    background: linear-gradient(90deg, #0dcaf0 0%, #31d2f2 60%, #6edff6 100%);
+}
+
+.card-header.bg-success {
+    background: linear-gradient(90deg, #198754 0%, #157347 60%, #4cb17c 100%);
+}
+
+#status-text.text-success {
+    animation: pulseStatus 2.5s ease-in-out infinite;
+}
+
+@keyframes pulseStatus {
+    0% { opacity: 1; }
+    50% { opacity: 0.55; }
+    100% { opacity: 1; }
+}
+
+.log-pre {
+    background: #111;
+    color: #d6d6d6;
+    font-family: 'JetBrains Mono','Courier New',monospace;
+}
+
+.log-pre .attack-line { color: #ff4d4f; }
+
+/* Scrollbar subtle styling */
+.log-container::-webkit-scrollbar { width: 8px; }
+.log-container::-webkit-scrollbar-track { background: #1e1e1e; }
+.log-container::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
+.log-container::-webkit-scrollbar-thumb:hover { background: #666; }

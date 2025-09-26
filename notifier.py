@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-Module gửi thông báo qua email và Telegram
+"""Module gửi thông báo qua Email / Telegram với cơ chế gom (batch) theo chu kỳ.
+
+Giảm spam bằng cách:
+- Thu thập cảnh báo vào deque
+- Đến chu kỳ (interval) mới kết hợp/gom nội dung rồi gửi một lần
 """
 
 import os
@@ -47,9 +50,27 @@ class Notifier:
         # Thời gian gửi thông báo cuối cùng
         self.last_email_time = 0
         self.last_telegram_time = 0
+
+    def apply_config(self, live_cfg):
+        """Hot reload cấu hình thông báo mà không cần khởi động lại thread."""
+        try:
+            self.enable_email = live_cfg.getboolean('Notification', 'enable_email', fallback=self.enable_email)
+            self.email_sender = live_cfg.get('Notification', 'email_sender', fallback=self.email_sender)
+            # password intentionally not logged
+            self.email_password = live_cfg.get('Notification', 'email_password', fallback=self.email_password)
+            self.email_recipient = live_cfg.get('Notification', 'email_recipient', fallback=self.email_recipient)
+            self.email_interval = live_cfg.getint('Notification', 'email_interval', fallback=self.email_interval)
+
+            self.enable_telegram = live_cfg.getboolean('Notification', 'enable_telegram', fallback=self.enable_telegram)
+            self.telegram_token = live_cfg.get('Notification', 'telegram_token', fallback=self.telegram_token)
+            self.telegram_chat_id = live_cfg.get('Notification', 'telegram_chat_id', fallback=self.telegram_chat_id)
+            self.telegram_interval = live_cfg.getint('Notification', 'telegram_interval', fallback=self.telegram_interval)
+            print(f"[Config] Notifier updated: email={self.enable_email} telegram={self.enable_telegram}")
+        except Exception as e:
+            print('[Config] Notifier apply_config error:', e)
         
     def start(self):
-        """Bắt đầu dịch vụ thông báo"""
+        """Bắt đầu dịch vụ thông báo (tạo thread nền)."""
         if self.running:
             return
             
@@ -60,14 +81,14 @@ class Notifier:
         print("[*] Notification service started")
         
     def stop(self):
-        """Dừng dịch vụ thông báo"""
+        """Dừng dịch vụ thông báo."""
         self.running = False
         if self.notification_thread and self.notification_thread.is_alive():
             self.notification_thread.join(timeout=2)
         print("[*] Notification service stopped")
         
     def add_alert(self, alert_data):
-        """Thêm cảnh báo vào hàng đợi thông báo"""
+        """Thêm cảnh báo vào hàng đợi – chỉ lưu nếu kênh tương ứng đang bật."""
         if not alert_data:
             return
             
@@ -78,7 +99,7 @@ class Notifier:
             self.telegram_alerts.append(alert_data)
             
     def _notification_loop(self):
-        """Vòng lặp chính để gửi thông báo"""
+        """Vòng lặp chính: mỗi chu kỳ kiểm tra có đủ điều kiện gửi Email/Telegram."""
         while self.running:
             now = time.time()
             
@@ -98,7 +119,7 @@ class Notifier:
             time.sleep(5)
             
     def _send_email_notification(self):
-        """Gửi thông báo qua email"""
+        """Kết hợp các cảnh báo đã thu thập và gửi một email HTML."""
         if not self.email_alerts:
             return
             
@@ -170,7 +191,7 @@ class Notifier:
             print(f"[!] Error sending email: {e}")
             
     def _send_telegram_notification(self):
-        """Gửi thông báo qua Telegram"""
+        """Nhóm cảnh báo theo loại và gửi tin nhắn Markdown qua Telegram Bot API."""
         if not self.telegram_alerts:
             return
             
@@ -224,7 +245,7 @@ class Notifier:
 _notifier_instance = None
 
 def get_notifier_instance(config_path='config.ini'):
-    """Lấy hoặc tạo instance Notifier"""
+    """Lấy hoặc tạo singleton Notifier."""
     global _notifier_instance
     if _notifier_instance is None:
         _notifier_instance = Notifier(config_path)

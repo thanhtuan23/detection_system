@@ -4,8 +4,9 @@ document.addEventListener('DOMContentLoaded', function() {
     // Get DOM elements
     const statusText = document.getElementById('status-text');
     const uptimeText = document.getElementById('uptime-text');
-    const startButton = document.getElementById('start-button');
-    const stopButton = document.getElementById('stop-button');
+    // Bỏ nút start/stop: không còn tham chiếu
+    const startButton = null;
+    const stopButton = null;
     const packetsProcessed = document.getElementById('packets-processed');
     const packetsPerSecond = document.getElementById('packets-per-second');
     const bytesProcessed = document.getElementById('bytes-processed');
@@ -52,17 +53,14 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(data => {
                 // Update status
                 if (data.start_time) {
-                    statusText.textContent = 'Running';
+                    statusText.textContent = 'Đang chạy';
                     statusText.className = 'text-success';
-                    startButton.disabled = true;
-                    stopButton.disabled = false;
-                    uptimeText.textContent = 'Uptime: ' + formatUptime(data.uptime);
+                    uptimeText.textContent = 'Thời gian chạy: ' + formatUptime(data.uptime);
                 } else {
-                    statusText.textContent = 'Stopped';
-                    statusText.className = 'text-danger';
-                    startButton.disabled = false;
-                    stopButton.disabled = true;
-                    uptimeText.textContent = 'Uptime: --';
+                    // Trường hợp không có start_time vẫn hiển thị đang chạy (hệ thống luôn bật)
+                    statusText.textContent = 'Đang chạy';
+                    statusText.className = 'text-success';
+                    uptimeText.textContent = 'Thời gian chạy: --';
                 }
                 
                 // Update statistics
@@ -110,24 +108,23 @@ document.addEventListener('DOMContentLoaded', function() {
                     const typeCell = document.createElement('td');
                     const typeBadge = document.createElement('span');
 
-                    // Đảm bảo tất cả loại tấn công đều có định dạng lowercase và gạch dưới nhất quán
-                    let badgeType = alert.type.toLowerCase().replace(/\s+/g, '_');
+                    // Gom nhóm hiển thị trên UI: luôn hiển thị 'ATTACK'
+                    const detailType = (alert.detail_type || alert.type || 'attack')
+                        .toString()
+                        .toLowerCase()
+                        .replace(/\s+/g, '_');
 
-                    // Kiểm tra xem có class CSS tương ứng không, nếu không thì dùng 'attack'
-                    const validTypes = [
-                        'attack', 'dos', 'syn_flood', 'port_scan', 'brute_force', 
-                        'web_attack', 'blacklist', 'rst_flood', 'fin_flood', 
-                        'http_flood', 'udp_flood'
-                    ];
+                    // Luôn dùng style 'attack' cho badge trên UI
+                    typeBadge.className = 'badge badge-attack';
 
-                    if (!validTypes.includes(badgeType)) {
-                        badgeType = 'attack'; // Mặc định nếu không có class tương ứng
+                    // Văn bản hiển thị: ATTACK
+                    typeBadge.textContent = 'ATTACK';
+
+                    // Giữ chi tiết loại tấn công ở tooltip (native title)
+                    if (detailType && detailType !== 'attack') {
+                        const niceDetail = detailType.toUpperCase().replace(/_/g, ' ');
+                        typeBadge.title = `Chi tiết: ${niceDetail}`;
                     }
-
-                    typeBadge.className = `badge badge-${badgeType}`;
-
-                    // Hiển thị tên loại tấn công với định dạng đẹp
-                    typeBadge.textContent = alert.type.toUpperCase().replace(/_/g, ' ');
                     typeCell.appendChild(typeBadge);
                     
                     // Source column
@@ -181,42 +178,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     // Handle start button click
-    startButton.addEventListener('click', function() {
-        fetch('/api/start', {
-            method: 'POST'
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                updateStats();
-            } else {
-                alert('Failed to start IDS');
-            }
-        })
-        .catch(error => {
-            console.error('Error starting IDS:', error);
-            alert('Error starting IDS');
-        });
-    });
-    
-    // Handle stop button click
-    stopButton.addEventListener('click', function() {
-        fetch('/api/stop', {
-            method: 'POST'
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                updateStats();
-            } else {
-                alert('Failed to stop IDS');
-            }
-        })
-        .catch(error => {
-            console.error('Error stopping IDS:', error);
-            alert('Error stopping IDS');
-        });
-    });
+    // Bỏ logic start/stop vì hệ thống luôn chạy
     
     // Initial update
     updateStats();
