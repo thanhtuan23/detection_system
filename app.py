@@ -211,9 +211,29 @@ def save_settings():
     if 'network' in payload:
         updates['Network'] = payload['network']
     if 'model' in payload:
-        updates.setdefault('Model', {}).update(payload['model'])
+        model_updates = {}
+        for k, v in payload['model'].items():
+            if v in ('', None):
+                continue
+            if k == 'threshold':
+                try:
+                    fv = float(v)
+                    if 0 <= fv <= 1:
+                        model_updates[k] = fv
+                except Exception:
+                    continue
+            else:
+                model_updates[k] = v
+        if model_updates:
+            updates.setdefault('Model', {}).update(model_updates)
     if 'notification' in payload:
-        updates.setdefault('Notification', {}).update(payload['notification'])
+        # Bỏ qua các trường rỗng để không overwrite mật khẩu/token cũ
+        cleaned = {}
+        for k, v in payload['notification'].items():
+            if v in ('', None):
+                continue
+            cleaned[k] = v
+        updates.setdefault('Notification', {}).update(cleaned)
 
     if updates:
         GLOBAL_CONFIG.write_updates(updates)

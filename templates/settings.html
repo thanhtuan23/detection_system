@@ -43,7 +43,7 @@
             Lỗi khi lưu cài đặt!
         </div>
         
-        <form id="settings-form">
+    <form id="settings-form" novalidate>
             <div class="card mb-4">
                 <div class="card-header bg-primary text-white">
                     <h5 class="mb-0">Cài đặt mạng</h5>
@@ -109,8 +109,9 @@
                         <div class="col-md-6">
                             <div class="mb-3">
                                 <label for="threshold" class="form-label">Ngưỡng cảnh báo</label>
-                                <input type="number" step="0.01" min="0" max="1" class="form-control" id="threshold" name="threshold" value="{{ settings.model.threshold }}">
-                                <div class="form-text">Ngưỡng xác suất sinh cảnh báo (0-1)</div>
+                                <input type="text" class="form-control" id="threshold" name="threshold" value="{{ settings.model.threshold }}" autocomplete="off" inputmode="decimal" placeholder="0.50">
+                                <div class="form-text">Ngưỡng xác suất sinh cảnh báo (0-1). Có thể nhập 0.5 hoặc 0,5</div>
+                                <div class="invalid-feedback" id="threshold-error">Giá trị phải nằm trong khoảng 0 - 1</div>
                             </div>
                         </div>
                     </div>
@@ -200,7 +201,10 @@
             </div>
             
             <div class="d-grid gap-2 d-md-flex justify-content-md-end mb-4">
-                <button type="submit" class="btn btn-primary">Lưu cài đặt</button>
+                <button type="submit" id="save-btn" class="btn btn-primary px-4">
+                    <span class="save-text">Lưu cài đặt</span>
+                    <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                </button>
             </div>
         </form>
     </div>
@@ -234,62 +238,116 @@
                 }
             });
             
-            // Handle form submission
+            // Helper: parse int/float an toàn
+            function safeInt(v) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : undefined; }
+            function safeFloat(v) { const n = parseFloat(v); return Number.isFinite(n) ? n : undefined; }
+            function prune(obj) {
+                Object.keys(obj).forEach(k => {
+                    const v = obj[k];
+                    if (v === '' || v === undefined || v === null || (typeof v === 'number' && !Number.isFinite(v))) {
+                        delete obj[k];
+                    }
+                });
+                return obj;
+            }
+
+            const saveBtn = document.getElementById('save-btn');
+            const spinner = saveBtn.querySelector('.spinner-border');
+            const saveText = saveBtn.querySelector('.save-text');
+
             form.addEventListener('submit', function(e) {
                 e.preventDefault();
-                
-                // Get form data
-                const formData = new FormData(form);
-                const settings = {
-                    network: {
-                        interface: formData.get('interface'),
-                        window: parseInt(formData.get('window')),
-                        min_packets: parseInt(formData.get('min_packets')),
-                        min_bytes: parseInt(formData.get('min_bytes'))
-                    },
-                    model: {
-                        model_path: formData.get('model_path'),
-                        preprocess_path: formData.get('preprocess_path'),
-                        threshold: parseFloat(formData.get('threshold'))
-                    },
-                    notification: {
-                        enable_email: formData.get('enable_email') === 'on',
-                        email_sender: formData.get('email_sender'),
-                        email_password: formData.get('email_password'),
-                        email_recipient: formData.get('email_recipient'),
-                        email_interval: parseInt(formData.get('email_interval')),
-                        enable_telegram: formData.get('enable_telegram') === 'on',
-                        telegram_token: formData.get('telegram_token'),
-                        telegram_chat_id: formData.get('telegram_chat_id'),
-                        telegram_interval: parseInt(formData.get('telegram_interval'))
-                    }
+
+                // Tránh double click
+                if (saveBtn.disabled) return;
+                saveBtn.disabled = true;
+                spinner.classList.remove('d-none');
+                saveText.textContent = 'Đang lưu...';
+
+                // Chuẩn hoá giá trị số trước
+                const sanitizeNumber = v => {
+                    if (v == null) return '';
+                    v = v.trim().replace(',', '.');
+                    return v;
                 };
-                
-                // Send settings to server
+
+                // Xử lý riêng threshold để tránh HTML5 chặn submit khi format sai
+                const thresholdInput = document.getElementById('threshold');
+                thresholdInput.value = sanitizeNumber(thresholdInput.value);
+
+                const formData = new FormData(form);
+                const network = prune({
+                    interface: formData.get('interface'),
+                    window: safeInt(formData.get('window')),
+                    min_packets: safeInt(formData.get('min_packets')),
+                    min_bytes: safeInt(formData.get('min_bytes'))
+                });
+                // Parse threshold với fallback
+                let thrRaw = formData.get('threshold');
+                thrRaw = sanitizeNumber(thrRaw);
+                let thrVal = safeFloat(thrRaw);
+                let thresholdError = false;
+                if (thrVal !== undefined) {
+                    if (thrVal < 0 || thrVal > 1) {
+                        thresholdError = true;
+                    }
+                }
+                const model = prune({
+                    model_path: formData.get('model_path'),
+                    preprocess_path: formData.get('preprocess_path'),
+                    threshold: thrVal
+                });
+
+                if (thresholdError) {
+                    const err = document.getElementById('threshold-error');
+                    thresholdInput.classList.add('is-invalid');
+                    err.classList.remove('d-none');
+                    saveBtn.disabled = false;
+                    spinner.classList.add('d-none');
+                    saveText.textContent = 'Lưu cài đặt';
+                    return;
+                } else {
+                    thresholdInput.classList.remove('is-invalid');
+                }
+                const notification = prune({
+                    enable_email: formData.get('enable_email') === 'on',
+                    email_sender: formData.get('email_sender'),
+                    email_password: formData.get('email_password'), // sẽ bị prune nếu rỗng
+                    email_recipient: formData.get('email_recipient'),
+                    email_interval: safeInt(formData.get('email_interval')),
+                    enable_telegram: formData.get('enable_telegram') === 'on',
+                    telegram_token: formData.get('telegram_token'),
+                    telegram_chat_id: formData.get('telegram_chat_id'),
+                    telegram_interval: safeInt(formData.get('telegram_interval'))
+                });
+
+                const payload = { network, model, notification };
+
                 fetch('/api/settings', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify(settings)
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
                 })
-                .then(response => response.json())
+                .then(r => r.ok ? r.json() : Promise.reject(r.status))
                 .then(data => {
                     if (data.success) {
                         saveSuccess.classList.remove('d-none');
                         saveError.classList.add('d-none');
-                        setTimeout(() => {
-                            saveSuccess.classList.add('d-none');
-                        }, 3000);
+                        setTimeout(() => saveSuccess.classList.add('d-none'), 3000);
                     } else {
                         saveError.classList.remove('d-none');
                         saveSuccess.classList.add('d-none');
                     }
                 })
-                .catch(error => {
-                    console.error('Error saving settings:', error);
+                .catch(err => {
+                    console.error('Save error:', err);
                     saveError.classList.remove('d-none');
                     saveSuccess.classList.add('d-none');
+                })
+                .finally(() => {
+                    saveBtn.disabled = false;
+                    spinner.classList.add('d-none');
+                    saveText.textContent = 'Lưu cài đặt';
                 });
             });
         });
