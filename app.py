@@ -30,6 +30,17 @@ app.secret_key = os.urandom(24)  # Secret key cho session
 USERNAME = config.get('WebUI', 'username', fallback='admin')
 PASSWORD = config.get('WebUI', 'password', fallback='admin123')
 PORT = config.getint('WebUI', 'port', fallback=5000)
+SUPPRESS_ACCESS_LOG = config.getboolean('WebUI', 'suppress_access_log', fallback=True)
+
+# Tắt log truy cập HTTP (werkzeug) nếu được yêu cầu
+if SUPPRESS_ACCESS_LOG:
+    wl = logging.getLogger('werkzeug')
+    wl.setLevel(logging.ERROR)
+    # Có thể tắt hoàn toàn nếu muốn: wl.disabled = True
+    # Đồng thời tắt logger Flask nếu không cần
+    app.logger.disabled = True
+    # Ngăn Flask tự thêm handler mới
+    app.config['LOGGER_HANDLER_POLICY'] = 'never'
 
 # Khởi tạo IDS và Notifier
 ids = get_ids_instance('config.ini')
