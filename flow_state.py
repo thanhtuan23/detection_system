@@ -1,3 +1,4 @@
+# Theo dõi và lưu trữ trạng thái của từng flow (luồng kết nối) mạng.
 import time
 from collections import defaultdict
 from ids_utils import tcp_flag_to_nslkdd

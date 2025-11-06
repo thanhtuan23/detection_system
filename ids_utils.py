@@ -1,3 +1,4 @@
+# cung cấp các hàm tiện ích để phân tích gói tin và IP
 import re
 from scapy.all import TCP, UDP, ICMP
 

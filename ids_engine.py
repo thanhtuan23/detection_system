@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
-"""Realtime IDS Engine – lõi xử lý chính
-
-Chức năng chính:
+"""
 1. Thu thập gói tin (sniff) theo giao diện cấu hình
 2. Gom nhóm thành luồng (flow) và duy trì trạng thái FlowState
 3. Tính đặc trưng gần giống NSL-KDD + đặc trưng bổ sung (tốc độ, is_https...)
@@ -275,17 +272,21 @@ class IDSEngine:
                 self.stats["last_update_time"] = now
 
             # Flood detectors (toàn cục) – chạy trước để phát hiện sớm tấn công volumetric
-            # SYN flood: chỉ xét gói TCP có cờ SYN
-            if pkt.haslayer(TCP) and pkt[TCP].flags & 0x02:
-                self.syn_flood_global.process(
-                    pkt,
-                    is_trusted_source_fn=self._is_trusted_source,
-                    window_seconds=self.window,
-                    attack_logger=self.attack_logger,
-                    alert_queue=self.alert_queue,
-                    recent_alerts=self.recent_alerts,
-                    stats=self.stats,
-                )
+            # SYN flood: chỉ xét SYN khởi tạo (SYN=1, ACK=0) để tránh tính cả SYN-ACK
+            if pkt.haslayer(TCP):
+                _flags = int(pkt[TCP].flags)
+                _is_syn = (_flags & 0x02) != 0
+                _is_ack = (_flags & 0x10) != 0
+                if _is_syn and not _is_ack:
+                    self.syn_flood_global.process(
+                        pkt,
+                        is_trusted_source_fn=self._is_trusted_source,
+                        window_seconds=self.window,
+                        attack_logger=self.attack_logger,
+                        alert_queue=self.alert_queue,
+                        recent_alerts=self.recent_alerts,
+                        stats=self.stats,
+                    )
             # UDP flood
             self.udp_flood_global.process(
                 pkt,

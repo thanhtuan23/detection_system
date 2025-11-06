@@ -1,13 +1,9 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""Quản lý cấu hình động (live) cho phép *hot-reload* file config.ini
-không cần khởi động lại dịch vụ.
+"""Quản lý cấu hình động (live) cho phép *hot-reload* file config.ini không cần khởi động lại dịch vụ.
 
 - Cung cấp đối tượng GLOBAL_CONFIG dùng chung, an toàn luồng (thread-safe)
-- Các hàm get tiện lợi: get / getint / getfloat / getboolean
-- Hàm write_updates() ghi các thay đổi (dạng dict lồng) xuống file một cách
-    *atomic* rồi tự reload lại vào bộ nhớ
-- Được sử dụng trong endpoint /api/settings để áp dụng thay đổi ngay.
+- Các hàm get : get / getint / getfloat / getboolean
+- Hàm write_updates() ghi các thay đổi (dạng dict lồng) xuống file một cách an toàn và tự động tải lại (reload) nội dung sau khi ghi xong.
 """
 import configparser
 import threading

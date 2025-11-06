@@ -94,14 +94,14 @@
                             <div class="mb-3">
                                 <label for="model_path" class="form-label">Đường dẫn mô hình</label>
                                 <input type="text" class="form-control" id="model_path" name="model_path" value="{{ settings.model.model_path }}">
-                                <div class="form-text">Đường dẫn tới mô hình đã huấn luyện (.h5)</div>
+                                <div class="form-text">Đường dẫn tới mô hình đã huấn luyện </div>
                             </div>
                         </div>
                         <div class="col-md-6">
                             <div class="mb-3">
                                 <label for="preprocess_path" class="form-label">Đường dẫn tiền xử lý</label>
                                 <input type="text" class="form-control" id="preprocess_path" name="preprocess_path" value="{{ settings.model.preprocess_path }}">
-                                <div class="form-text">Đường dẫn pipeline tiền xử lý (.pkl)</div>
+                                <div class="form-text">Đường dẫn pipeline tiền xử lý</div>
                             </div>
                         </div>
                     </div>
@@ -110,7 +110,7 @@
                             <div class="mb-3">
                                 <label for="threshold" class="form-label">Ngưỡng cảnh báo</label>
                                 <input type="text" class="form-control" id="threshold" name="threshold" value="{{ settings.model.threshold }}" autocomplete="off" inputmode="decimal" placeholder="0.50">
-                                <div class="form-text">Ngưỡng xác suất sinh cảnh báo (0-1). Có thể nhập 0.5 hoặc 0,5</div>
+                                <div class="form-text">Ngưỡng xác suất sinh cảnh báo. </div>
                                 <div class="invalid-feedback" id="threshold-error">Giá trị phải nằm trong khoảng 0 - 1</div>
                             </div>
                         </div>

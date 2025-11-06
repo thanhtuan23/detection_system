@@ -2,10 +2,6 @@
 # -*- coding: utf-8 -*-
 
 """Module gửi thông báo qua Email / Telegram với cơ chế gom (batch) theo chu kỳ.
-
-Giảm spam bằng cách:
-- Thu thập cảnh báo vào deque
-- Đến chu kỳ (interval) mới kết hợp/gom nội dung rồi gửi một lần
 """
 
 import os

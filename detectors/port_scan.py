@@ -12,6 +12,7 @@ class PortScanDetector:
     - Vượt quá threshold số cổng duy nhất trong cửa sổ 60s => Cảnh báo
     """
     def __init__(self, threshold: int = 15):
+        # window structure: { src_ip: { dst_ip: set(dport) } }
         self.window = {}
         self.last_clean = time.time()
         self.threshold = threshold
@@ -37,15 +38,22 @@ class PortScanDetector:
             if src_ip.startswith(prefix):
                 return False
 
-        # Chỉ xét gói SYN
-        if pkt[TCP].flags & 0x02:
+        # Chỉ xét SYN khởi tạo (SYN=1 và ACK=0) để tránh nhầm SYN-ACK là nguồn quét
+        flags = int(pkt[TCP].flags)
+        is_syn = (flags & 0x02) != 0
+        is_ack = (flags & 0x10) != 0
+        if is_syn and not is_ack:
             if src_ip not in self.window:
-                self.window[src_ip] = defaultdict(int)
-            self.window[src_ip][dst_port] += 1
+                self.window[src_ip] = {}
+            if dst_ip not in self.window[src_ip]:
+                self.window[src_ip][dst_ip] = set()
+            self.window[src_ip][dst_ip].add(int(dst_port))
 
-            if len(self.window[src_ip]) > self.threshold:
-                port_list = list(self.window[src_ip].keys())
-                alert_msg = f"PORT SCAN DETECTED from {src_ip} to {dst_ip} (ports: {port_list[:5]}...)"
+            unique_ports = len(self.window[src_ip][dst_ip])
+            if unique_ports >= self.threshold:
+                ports_sorted = sorted(list(self.window[src_ip][dst_ip]))
+                preview = f"[{', '.join(map(str, ports_sorted[:5]))}]..."
+                alert_msg = f"PORT SCAN DETECTED proto=TCP from {src_ip} to {dst_ip} (ports: {preview})"
                 now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
                 print(f"[{now_str}] {alert_msg}")
                 attack_logger.info(alert_msg)
@@ -54,7 +62,8 @@ class PortScanDetector:
                     "type": "port_scan",
                     "src_ip": src_ip,
                     "dst_ip": dst_ip,
-                    "ports": port_list[:10],
+                    "proto": "TCP",
+                    "ports": ports_sorted[:10],
                     "time": now_str,
                     "message": alert_msg
                 }
@@ -62,7 +71,7 @@ class PortScanDetector:
                 recent_alerts.append(alert_data)
                 stats["alerts_generated"] += 1
 
-                # reset cho nguồn này để tránh spam liên tục
-                self.window[src_ip] = {}
+                # reset cho cặp nguồn-đích này để tránh spam liên tục
+                self.window[src_ip][dst_ip] = set()
                 return True
         return False

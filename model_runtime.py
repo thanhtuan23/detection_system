@@ -5,17 +5,6 @@ import joblib
 import tensorflow as tf
 import sys
 
-# ==============================================================
-# Compatibility shim: ReducedPreprocessorWrapper
-# --------------------------------------------------------------
-# Các pipeline đã lưu trong notebook có thể chứa lớp
-# ReducedPreprocessorWrapper (được pickle với __module__='__main__').
-# Khi chạy ở runtime (app.py), __main__ là app.py và không có lớp này => lỗi:
-#   Can't get attribute 'ReducedPreprocessorWrapper' ...
-# Ta định nghĩa lại lớp tối thiểu và gắn vào sys.modules['__main__']
-# để joblib có thể unpickle an toàn.
-# ==============================================================
-
 class ReducedPreprocessorWrapper:
     """Wrapper cắt giảm số cột sau transform.
 

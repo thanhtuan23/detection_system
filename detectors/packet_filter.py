@@ -10,7 +10,6 @@ class PacketFilter:
     - Phát hiện sớm IP trong blacklist và tạo cảnh báo ngay
     - Kết hợp detector quét cổng trước khi chuyển tiếp sang xây dựng luồng
 
-    Mục tiêu: giảm tải cho giai đoạn trích đặc trưng + mô hình ML/DL.
     """
     def __init__(self, *, ignore_https: bool, whitelist: set, blacklist: set,
                  port_scan_detector, attack_logger, alert_queue, recent_alerts, stats: dict):
