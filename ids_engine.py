@@ -86,6 +86,16 @@ class IDSEngine:
         self.model_path = config.get('Model', 'model_path')
         self.preprocess_path = config.get('Model', 'preprocess_path')
         self.alert_threshold = config.getfloat('Model', 'threshold')
+        # Ngưỡng flood cho lab/production
+        try:
+            self.dos_packet_rate = config.getint('Model', 'dos_packet_rate', fallback=1000)
+        except Exception:
+            self.dos_packet_rate = 1000
+        try:
+            # Thời gian reset bộ đếm flood (giây) – mặc định 5 để cảnh báo nhanh hơn
+            self.dos_reset_seconds = config.getint('Model', 'dos_reset_seconds', fallback=5)
+        except Exception:
+            self.dos_reset_seconds = 5
 
     # -------- Cấu hình lọc gói --------
         self.whitelist_file = config.get('Filtering', 'whitelist_file')
@@ -125,8 +135,12 @@ class IDSEngine:
     # Lưu lịch sử cảnh báo (giảm lặp lại ngắn hạn)
         self.previous_alerts = {}
 
-    # Detector: quét cổng (theo dõi SYN trên nhiều cổng)
-        self.port_scan = PortScanDetector(threshold=15)
+    # Detector: quét cổng (theo dõi SYN trên nhiều cổng) – đọc ngưỡng từ config nếu có
+        try:
+            self.port_scan_threshold = config.getint('Filtering', 'port_scan_threshold', fallback=15)
+        except Exception:
+            self.port_scan_threshold = 15
+        self.port_scan = PortScanDetector(threshold=self.port_scan_threshold)
 
     # Thống kê phục vụ UI / giám sát
         self.stats = {
@@ -140,13 +154,13 @@ class IDSEngine:
         }
 
     # Detector: SYN Flood (toàn cục + phân tán)
-        self.syn_flood_global = SynFloodGlobalDetector(total_threshold=1000, reset_seconds=10)
+        self.syn_flood_global = SynFloodGlobalDetector(total_threshold=self.dos_packet_rate, reset_seconds=self.dos_reset_seconds)
         self.syn_flood_dist = SynFloodDistributedDetector()
     # Detector: UDP Flood
-        self.udp_flood_global = UDPGlobalDetector(total_threshold=1500, reset_seconds=10)
+        self.udp_flood_global = UDPGlobalDetector(total_threshold=self.dos_packet_rate, reset_seconds=self.dos_reset_seconds)
         self.udp_flood_dist = UDPDistributedDetector()
     # Detector: ICMP Flood
-        self.icmp_flood_global = ICMPGlobalDetector(total_threshold=1200, reset_seconds=10)
+        self.icmp_flood_global = ICMPGlobalDetector(total_threshold=self.dos_packet_rate, reset_seconds=self.dos_reset_seconds)
         self.icmp_flood_dist = ICMPDistributedDetector()
 
     # Danh sách cảnh báo gần đây cho dashboard
@@ -195,7 +209,29 @@ class IDSEngine:
             if hasattr(self, 'packet_filter'):
                 self.packet_filter.ignore_https = self.ignore_https
 
-            print(f"[Config] IDS updated: window={self.window} min_pkts={self.min_pkts} min_bytes={self.min_bytes} threshold={self.alert_threshold}")
+            # Cập nhật ngưỡng flood động
+            new_dos_pkt = live_cfg.getint('Model', 'dos_packet_rate', fallback=self.dos_packet_rate)
+            new_dos_reset = live_cfg.getint('Model', 'dos_reset_seconds', fallback=self.dos_reset_seconds)
+            if new_dos_pkt != self.dos_packet_rate or new_dos_reset != self.dos_reset_seconds:
+                self.dos_packet_rate = new_dos_pkt
+                self.dos_reset_seconds = new_dos_reset
+                # áp dụng cho 3 detector global
+                self.syn_flood_global.total_threshold = self.dos_packet_rate
+                self.udp_flood_global.total_threshold = self.dos_packet_rate
+                self.icmp_flood_global.total_threshold = self.dos_packet_rate
+                self.syn_flood_global.reset_seconds = self.dos_reset_seconds
+                self.udp_flood_global.reset_seconds = self.dos_reset_seconds
+                self.icmp_flood_global.reset_seconds = self.dos_reset_seconds
+                print(f"[Config] Flood thresholds updated → packets={self.dos_packet_rate}/reset={self.dos_reset_seconds}s")
+
+            # Cập nhật ngưỡng quét cổng động nếu thay đổi
+            new_ps_threshold = live_cfg.getint('Filtering', 'port_scan_threshold', fallback=self.port_scan_threshold)
+            if new_ps_threshold != self.port_scan_threshold:
+                self.port_scan_threshold = new_ps_threshold
+                self.port_scan.threshold = new_ps_threshold
+                print(f"[Config] Port scan threshold updated → {new_ps_threshold}")
+
+            print(f"[Config] IDS updated: window={self.window} min_pkts={self.min_pkts} min_bytes={self.min_bytes} threshold={self.alert_threshold} port_scan_threshold={self.port_scan_threshold} dos_packet_rate={self.dos_packet_rate} dos_reset_seconds={self.dos_reset_seconds}")
         except Exception as e:
             print('[Config] IDS apply_config error:', e)
 
