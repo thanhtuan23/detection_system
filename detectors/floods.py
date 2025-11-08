@@ -42,7 +42,8 @@ class SynFloodGlobalDetector:
             main_source = max(self.sources.items(), key=lambda x: x[1])
             main_target = max(self.targets.items(), key=lambda x: x[1])
             if main_source[1] >= self.total_syns * 0.25:
-                now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
+                # Local time
+                now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 # Rút gọn log: bỏ 'prob=1.000 window=..s'
                 alert_msg = f"ALERT SYN_Flood proto=tcp {main_source[0]}:* -> {main_target[0]}:*"
                 print(f"[{now_str}] {alert_msg}")
@@ -81,7 +82,7 @@ class SynFloodDistributedDetector:
             source_ip_pkts[sip] += state.pkt_src + state.pkt_dst
             if proto == "tcp" and "S0" in state.flag_counts:
                 candidates[sip].append((k, state))
-        now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         for src_ip, items in candidates.items():
             if is_local_ip_fn and is_local_ip_fn(src_ip):
                 continue
@@ -152,7 +153,7 @@ class UDPGlobalDetector:
             main_source = max(self.sources.items(), key=lambda x: x[1])
             main_target = max(self.targets.items(), key=lambda x: x[1])
             if main_source[1] >= self.total_udp * 0.25:
-                now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
+                now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 alert_msg = f"ALERT UDP_Flood proto=udp {main_source[0]}:* -> {main_target[0]}:*"
                 print(f"[{now_str}] {alert_msg}")
                 attack_logger.info(alert_msg)
@@ -187,7 +188,7 @@ class UDPDistributedDetector:
                 continue
             source_ip_pkts[sip] += state.pkt_src + state.pkt_dst
             candidates[sip].append((k, state))
-        now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         for src_ip, items in candidates.items():
             if is_local_ip_fn and is_local_ip_fn(src_ip):
                 continue
@@ -258,7 +259,7 @@ class ICMPGlobalDetector:
             main_source = max(self.sources.items(), key=lambda x: x[1])
             main_target = max(self.targets.items(), key=lambda x: x[1])
             if main_source[1] >= self.total_icmp * 0.25:
-                now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
+                now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 alert_msg = f"ALERT ICMP_Flood proto=icmp {main_source[0]}:* -> {main_target[0]}:*"
                 print(f"[{now_str}] {alert_msg}")
                 attack_logger.info(alert_msg)
@@ -293,7 +294,7 @@ class ICMPDistributedDetector:
                 continue
             source_ip_pkts[sip] += state.pkt_src + state.pkt_dst
             candidates[sip].append((k, state))
-        now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         for src_ip, items in candidates.items():
             if is_local_ip_fn and is_local_ip_fn(src_ip):
                 continue

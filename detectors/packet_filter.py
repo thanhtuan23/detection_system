@@ -59,7 +59,8 @@ class PacketFilter:
 
         # Blacklist: tạo cảnh báo ngay lập tức rồi dừng
         if src_ip in self.blacklist or dst_ip in self.blacklist:
-            now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
+            # Local time (no trailing Z)
+            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             alert_msg = f"BLACKLISTED IP DETECTED: {src_ip} -> {dst_ip}"
             print(f"[{now_str}] {alert_msg}")
             self.attack_logger.info(alert_msg)

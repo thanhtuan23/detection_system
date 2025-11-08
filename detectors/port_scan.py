@@ -54,7 +54,8 @@ class PortScanDetector:
                 ports_sorted = sorted(list(self.window[src_ip][dst_ip]))
                 preview = f"[{', '.join(map(str, ports_sorted[:5]))}]..."
                 alert_msg = f"PORT SCAN DETECTED proto=TCP from {src_ip} to {dst_ip} (ports: {preview})"
-                now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
+                # Dùng giờ địa phương, không hiển thị hậu tố Z (UTC)
+                now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 print(f"[{now_str}] {alert_msg}")
                 attack_logger.info(alert_msg)
 

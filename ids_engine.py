@@ -448,7 +448,8 @@ class IDSEngine:
                         attack_type = self._determine_attack_type(k, st)
                         # Rút gọn log: bỏ xác suất & kích thước cửa sổ khỏi chuỗi log để ngắn gọn hơn
                         alert_msg = f"ALERT {attack_type} proto={proto} {sip}:{sport} -> {dip}:{dport}"
-                        now_str_local = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
+                        # Dùng giờ hệ thống địa phương, bỏ hậu tố Z (UTC)
+                        now_str_local = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                         print(f"[{now_str_local}] {alert_msg}")
                         self.attack_logger.info(alert_msg)
 
