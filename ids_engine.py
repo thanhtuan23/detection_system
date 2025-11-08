@@ -495,8 +495,11 @@ class IDSEngine:
         self.predict_thread.start()
 
         def start_sniffing():
-            print(f"[*] Sniffing on {self.iface}...")
-            sniff(iface=self.iface, prn=self._packet_cb, store=False, stop_filter=lambda x: not self.running)
+            # Hỗ trợ nhiều interface: ví dụ "ens33,ens37"
+            ifaces = [i.strip() for i in str(self.iface).split(',') if i.strip()]
+            iface_arg = ifaces if len(ifaces) > 1 else (ifaces[0] if ifaces else None)
+            print(f"[*] Sniffing on {iface_arg}...")
+            sniff(iface=iface_arg, prn=self._packet_cb, store=False, stop_filter=lambda x: not self.running)
 
         self.sniff_thread = threading.Thread(target=start_sniffing, daemon=True)
         self.sniff_thread.start()
