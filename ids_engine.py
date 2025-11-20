@@ -249,9 +249,21 @@ class IDSEngine:
                 print(f"[+] Đã tải mô hình ML từ {path} (best: {info.get('best_ml_name')})")
             else:
                 print(f"[+] Đã tải mô hình DL từ {path}")
+            
+            # 🔍 DEBUG: Verify model loaded
+            print(f"🤖 Model type: {type(self.model).__name__}")
+            print(f"🔧 Preprocess type: {type(self.preprocess).__name__}")
+            print(f"🎯 Alert threshold: {self.alert_threshold}")
+            if self.model is None:
+                print("❌ WARNING: MODEL IS NONE!")
+            if self.preprocess is None:
+                print("❌ WARNING: PREPROCESS IS NONE!")
+            
             return True
         except Exception as e:
             print(f"[!] Lỗi tải mô hình: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def _predict_probabilities(self, X: np.ndarray) -> np.ndarray:
@@ -377,6 +389,10 @@ class IDSEngine:
                 if not self.flows:
                     continue
 
+                # 🔍 DEBUG: Đếm flows trước khi lọc
+                total_flows = len(self.flows)
+                filtered_count = 0
+
                 # Lọc các luồng chưa đủ số gói / bytes tối thiểu
                 filtered_flows = {}
                 for k, state in list(self.flows.items()):
@@ -384,8 +400,19 @@ class IDSEngine:
                     total_bytes = state.src_bytes + state.dst_bytes
                     if total_pkts >= self.min_pkts and total_bytes >= self.min_bytes:
                         filtered_flows[k] = state
+                    else:
+                        filtered_count += 1
+                        # 🔍 DEBUG: Log flows bị lọc nếu có nhiều packets
+                        if total_pkts >= 10:
+                            print(f"🚫 Flow FILTERED: {k[0]}:{k[1]}→{k[2]}:{k[3]} pkts={total_pkts}/{self.min_pkts} bytes={total_bytes}/{self.min_bytes}")
+
+                # 🔍 DEBUG: Log summary
+                analyzed = len(filtered_flows)
+                print(f"📊 Window summary: total_flows={total_flows}, filtered={filtered_count}, analyzed={analyzed}")
 
                 if not filtered_flows:
+                    if total_flows > 0:
+                        print(f"⚠️ NO FLOWS analyzed (all {total_flows} filtered out)!")
                     self.flows.clear()
                     continue
 
@@ -441,9 +468,16 @@ class IDSEngine:
                 probs = self._predict_probabilities(X).ravel()
                 preds = (probs >= self.alert_threshold).astype(int)
 
+                # 🔍 DEBUG: Log predictions
+                alert_count = 0
+                for idx, (k, pr) in enumerate(zip(keys, probs)):
+                    if pr > 0.1:  # Log cả flows có prob thấp
+                        print(f"🔮 Prediction #{idx}: {k[0]}→{k[2]}:{k[3]} prob={pr:.3f} threshold={self.alert_threshold:.3f} {'✅ALERT' if pr >= self.alert_threshold else '❌SKIP'}")
+
                 # Phát cảnh báo (nếu vượt ngưỡng + qua hậu xử lý)
                 for k, p, pr, st in zip(keys, preds, probs, states):
                     if p == 1 and self._post_process_alert(k, pr, st):
+                        alert_count += 1
                         sip, sport, dip, dport, proto = k
                         attack_type = self._determine_attack_type(k, st)
                         # Rút gọn log: bỏ xác suất & kích thước cửa sổ khỏi chuỗi log để ngắn gọn hơn
@@ -475,6 +509,12 @@ class IDSEngine:
                         self.alert_queue.put(alert_data)
                         self.recent_alerts.append(alert_data)
                         self.stats["alerts_generated"] += 1
+
+                # 🔍 DEBUG: Log alert summary
+                if alert_count > 0:
+                    print(f"🚨 Generated {alert_count} ML-based alerts this window")
+                elif analyzed > 0:
+                    print(f"ℹ️ No alerts (analyzed {analyzed} flows, max_prob={max(probs):.3f})")
 
                 # Reset toàn bộ state để chuẩn bị cửa sổ kế tiếp
                 self.flows.clear()

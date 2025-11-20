@@ -53,6 +53,10 @@ class FlowState:
         dst_host_count = count
         dst_host_srv_count = srv_count
         
+        # 🔍 DEBUG: Log features quan trọng cho flows lớn (nghi ngờ DoS)
+        if count > 20 or (self.pkt_src + self.pkt_dst) > 50:
+            print(f"🔍 FEATURES {sip}→{dip}:{dport} pkts={self.pkt_src+self.pkt_dst} duration={duration:.2f}s count={count} srv_count={srv_count}")
+        
         # Tính các RATE quan trọng (KHÔNG ĐỂ = 0 nữa!)
         # same_srv_rate: tỷ lệ kết nối cùng service trong window (TOP #1 feature - 9.85% importance)
         same_srv_rate = float(srv_count) / max(1, count) if count > 0 else 0.0
@@ -94,6 +98,10 @@ class FlowState:
         
         # is_guest_login: TOP #16 feature (2.42%)
         is_guest_login = 0  # Thường = 0 trừ khi có evidence cụ thể
+        
+        # 🔍 DEBUG: Log key rates cho flows nghi ngờ
+        if count > 20 or (self.pkt_src + self.pkt_dst) > 50:
+            print(f"   same_srv_rate={same_srv_rate:.3f} serror_rate={serror_rate:.3f} logged_in={logged_in}")
 
         # NSL-KDD core columns - TÊN PHẢI KHỚP CHÍNH XÁC VỚI TRAINING!
         row = {
