@@ -208,30 +208,33 @@ class IDSEngine:
             return True
         
         # Rule 2: Flow nhỏ → Kiểm tra IP có nghi ngờ không
-        src_ip = flow_key.split('-')[0] if '-' in flow_key else None
-        if not src_ip:
+        # ✅ FIX: flow_key là tuple (sip, sport, dip, dport, proto)
+        if isinstance(flow_key, tuple) and len(flow_key) >= 5:
+            src_ip = flow_key[0]  # Lấy phần tử đầu tiên (sip)
+        else:
             return False
         
         # Đếm số flow nhỏ từ IP này
+        # ✅ FIX: KHÔNG dùng with self.lock (đã lock ở caller)
         current_time = time.time()
-        with self.lock:
-            tracker = self.small_flow_tracker[src_ip]
-            
-            # Reset bộ đếm nếu quá window
-            if current_time - tracker['last_reset'] > self.small_flow_window:
-                tracker['count'] = 0
-                tracker['last_reset'] = current_time
-            
-            # Tăng đếm flow nhỏ
-            tracker['count'] += 1
-            
-            # Nếu IP tạo quá nhiều flow nhỏ → Nghi ngờ DoS (hping3)
-            if tracker['count'] > self.small_flow_threshold:
-                self.attack_logger.warning(
-                    f"⚠️ Suspicious small flows: {src_ip} created {tracker['count']} "
-                    f"flows < {self.min_pkts} packets in {self.small_flow_window}s"
-                )
-                return True  # Classify để AI xác nhận
+        tracker = self.small_flow_tracker[src_ip]
+        
+        # Reset bộ đếm nếu quá window
+        if current_time - tracker['last_reset'] > self.small_flow_window:
+            tracker['count'] = 0
+            tracker['last_reset'] = current_time
+        
+        # Tăng đếm flow nhỏ
+        tracker['count'] += 1
+        
+        # Nếu IP tạo quá nhiều flow nhỏ → Nghi ngờ DoS (hping3)
+        if tracker['count'] > self.small_flow_threshold:
+            print(f"⚠️ Suspicious: {src_ip} created {tracker['count']} small flows in {self.small_flow_window}s")
+            self.attack_logger.warning(
+                f"⚠️ Suspicious small flows: {src_ip} created {tracker['count']} "
+                f"flows < {self.min_pkts} packets in {self.small_flow_window}s"
+            )
+            return True  # Classify để AI xác nhận
         
         return False  # Flow nhỏ từ IP bình thường → Bỏ qua
 
@@ -372,6 +375,11 @@ class IDSEngine:
             # Thống kê cơ bản
             self.stats["packets_processed"] += 1
             self.stats["bytes_processed"] += len(pkt)
+            
+            # 🔍 DEBUG: In 10 packets đầu tiên
+            if self.stats["packets_processed"] <= 10:
+                proto = "tcp" if pkt.haslayer(TCP) else "udp" if pkt.haslayer(UDP) else "other"
+                print(f"📦 Packet #{self.stats['packets_processed']}: {pkt[IP].src}→{pkt[IP].dst} proto={proto}")
 
             now = time.time()
             if now - self.stats["last_update_time"] >= 1:
@@ -423,8 +431,13 @@ class IDSEngine:
             # Cập nhật hoặc khởi tạo FlowState
             key = self._flow_key(pkt)
             with self.lock:
-                if key not in self.flows:
+                is_new = key not in self.flows
+                if is_new:
                     self.flows[key] = FlowState(proto_name(pkt), guess_service(pkt))
+                    # 🔍 DEBUG: In 5 flows đầu tiên
+                    if len(self.flows) <= 5:
+                        sip, sport, dip, dport, proto = key
+                        print(f"🌊 New flow #{len(self.flows)}: {sip}:{sport}→{dip}:{dport} proto={proto}")
                 state = self.flows[key]
                 direction = self._direction_src_to_dst(pkt, key)
                 state.update(pkt, direction)
@@ -452,6 +465,7 @@ class IDSEngine:
                 # 🔍 DEBUG: Đếm flows trước khi lọc
                 total_flows = len(self.flows)
                 filtered_count = 0
+                classified_count = 0
 
                 # Lọc các luồng chưa đủ số gói / bytes tối thiểu
                 filtered_flows = {}
@@ -472,8 +486,13 @@ class IDSEngine:
                     }
                     if self._should_classify(k, flow_data):
                         filtered_flows[k] = state
+                        classified_count += 1
                     else:
                         filtered_count += 1
+                
+                # 🔍 DEBUG: In thống kê
+                if total_flows > 0:
+                    print(f"📊 Flows: total={total_flows} classified={classified_count} filtered={filtered_count}")
 
                 if not filtered_flows:
                     self.flows.clear()
@@ -689,10 +708,17 @@ class IDSEngine:
 
     def start(self) -> bool:
         if self.running:
+            print("⚠️ IDS already running!")
             return False
+        
+        print("🔍 Checking model...")
         if not hasattr(self, 'model') or not hasattr(self, 'preprocess') or self.model is None or self.preprocess is None:
+            print("📥 Loading model...")
             if not self.load_model():
+                print("❌ Failed to load model!")
                 return False
+        else:
+            print(f"✅ Model already loaded: {type(self.model).__name__}")
 
         self.running = True
         self.stats["start_time"] = time.time()
