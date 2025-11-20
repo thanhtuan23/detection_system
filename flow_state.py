@@ -75,17 +75,75 @@ class FlowState:
         # ERROR RATES: tính từ flag_counts (QUAN TRỌNG cho DoS/Probe detection)
         total_flags = sum(self.flag_counts.values())
         if total_flags > 0:
-            # serror: CHỈ tính S0 (half-open) và REJ (rejected)
-            # Không tính RSTR/RSTO vì có thể là traffic bình thường
-            serror_count = self.flag_counts.get("S0", 0) + self.flag_counts.get("REJ", 0)
-            serror_rate = float(serror_count) / total_flags
+            # 🆕 LEVEL 1.1: Phân tách chính xác các loại errors
+            # S0: Half-open (SYN không có SYN-ACK) - ĐẶC TRƯNG DOS MẠNH!
+            s0_count = self.flag_counts.get("S0", 0)
+            
+            # REJ: Rejected (port closed/filtered) - riêng biệt
+            rej_count = self.flag_counts.get("REJ", 0)
+            
+            # serror: CHỈ tính S0 (bỏ REJ để chính xác hơn)
+            serror_rate = float(s0_count) / total_flags
+            
+            # 🆕 rej_rate: Tách riêng REJ ra (cho port scan detection)
+            rej_rate = float(rej_count) / total_flags
             
             # rerror: RST errors (RSTR/RSTO)
             rerror_count = self.flag_counts.get("RSTR", 0) + self.flag_counts.get("RSTO", 0)
             rerror_rate = float(rerror_count) / total_flags
         else:
             serror_rate = 0.0
+            rej_rate = 0.0
             rerror_rate = 0.0
+        
+        # 🆕 LEVEL 1.2: PROTOCOL-SPECIFIC FLOOD FEATURES
+        total_pkts = self.pkt_src + self.pkt_dst
+        
+        # === TCP SYN FLOOD FEATURES ===
+        if total_pkts > 0 and total_flags > 0 and self.proto == "tcp":
+            # syn_ratio: Tễ lệ SYN packets trong flow
+            # Normal: ~0.1-0.2 (vài SYN trong nhiều packets)
+            # DoS: 0.5-1.0 (toàn SYN!)
+            syn_count = s0_count  # S0 = SYN without response
+            syn_ratio = float(syn_count) / total_pkts
+            
+            # syn_ack_ratio: Cân bằng SYN vs SYN-ACK
+            # Normal: ~1.0 (mỗi SYN có 1 SYN-ACK)
+            # DoS: ~0.0 (nhiều SYN, không có SYN-ACK)
+            synack_count = self.flag_counts.get("SF", 0)  # SF = successful
+            if syn_count > 0:
+                syn_ack_ratio = float(synack_count) / syn_count
+            else:
+                syn_ack_ratio = 1.0  # Normal case
+        else:
+            syn_ratio = 0.0
+            syn_ack_ratio = 1.0
+        
+        # === UDP/ICMP FLOOD FEATURES ===
+        # 🆕 packet_imbalance: Tỉ lệ packets src/dst
+        # Normal: ~0.5-2.0 (cân bằng request/response)
+        # DoS: >10 (chỉ gửi, không nhận)
+        if self.pkt_dst > 0:
+            packet_imbalance = float(self.pkt_src) / self.pkt_dst
+        else:
+            packet_imbalance = 100.0 if self.pkt_src > 0 else 1.0  # Chỉ gửi, không nhận = DoS!
+        
+        # 🆕 byte_imbalance: Tỉ lệ bytes src/dst
+        # Normal: ~0.5-2.0
+        # DoS: >10 (gửi nhiều, nhận ít)
+        if self.dst_bytes > 0:
+            byte_imbalance = float(self.src_bytes) / self.dst_bytes
+        else:
+            byte_imbalance = 100.0 if self.src_bytes > 0 else 1.0
+        
+        # 🆕 small_packet_ratio: Tỉ lệ packets nhỏ (< 100 bytes)
+        # ICMP Echo: 64 bytes, UDP Flood: thường < 100 bytes
+        # DoS: >0.8 (80% packets nhỏ)
+        if total_pkts > 0:
+            avg_pkt_size = (self.src_bytes + self.dst_bytes) / total_pkts
+            small_packet_ratio = 1.0 if avg_pkt_size < 100 else 0.0
+        else:
+            small_packet_ratio = 0.0
         
         # srv & dst_host error rates (TOP #5 feature: dst_host_srv_serror_rate - 5.99%)
         srv_serror_rate = serror_rate
@@ -135,6 +193,14 @@ class FlowState:
             "srv_serror_rate": srv_serror_rate,  # ✅ Tính toán thực
             "rerror_rate": rerror_rate,  # ✅ Tính toán thực
             "srv_rerror_rate": srv_rerror_rate,  # ✅ TOP #8 (4.30%)
+            
+            # 🆕 NEW FEATURES: DoS detection boost (TCP + UDP + ICMP)
+            "rej_rate": rej_rate,  # Tách REJ riêng khỏi serror
+            "syn_ratio": syn_ratio,  # Tỉ lệ SYN packets (cao = TCP DoS)
+            "syn_ack_ratio": syn_ack_ratio,  # Cân bằng SYN/ACK (thấp = TCP DoS)
+            "packet_imbalance": packet_imbalance,  # Tỉ lệ src/dst packets (cao = UDP/ICMP DoS)
+            "byte_imbalance": byte_imbalance,  # Tỉ lệ src/dst bytes (cao = UDP/ICMP DoS)
+            "small_packet_ratio": small_packet_ratio,  # Tỉ lệ packets nhỏ (cao = ICMP/UDP flood)
             "same_srv_rate": same_srv_rate,  # ✅ TOP #1 (9.85%) - QUAN TRỌNG NHẤT!
             "diff_srv_rate": diff_srv_rate,  # ✅ TOP #10 (3.61%)
             "srv_diff_host_rate": srv_diff_host_rate,  # ✅ TOP #11 (3.38%)

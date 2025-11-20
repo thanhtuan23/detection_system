@@ -461,6 +461,14 @@ class IDSEngine:
                 for col in ["duration","src_bytes","dst_bytes","count","srv_count","dst_host_count","dst_host_srv_count"]:
                     if col not in df:
                         df[col] = 0.0
+                
+                # 🆕 Drop new features nếu model chưa được retrain
+                # Model hiện tại chỉ biết 41 features gốc
+                new_features = ['rej_rate', 'syn_ratio', 'syn_ack_ratio', 
+                               'packet_imbalance', 'byte_imbalance', 'small_packet_ratio']
+                for feat in new_features:
+                    if feat in df.columns:
+                        df = df.drop(columns=[feat])
 
                 X = self.preprocess.transform(df)
                 probs = self._predict_probabilities(X).ravel()
@@ -471,12 +479,64 @@ class IDSEngine:
 
                 # Phát cảnh báo (nếu vượt ngưỡng + qua hậu xử lý)
                 for k, p, pr, st in zip(keys, preds, probs, states):
+                    # 🆕 LEVEL 4: CONFIDENCE BOOSTING (TCP/UDP/ICMP)
+                    # Tăng probability nếu có đặc trưng DoS rõ ràng
+                    original_prob = pr
+                    sip, sport, dip, dport, proto = k
+                    
+                    if p == 1:  # Model dự đoán Attack
+                        boost_applied = False
+                        
+                        # === TCP SYN FLOOD BOOSTING ===
+                        if proto == "tcp":
+                            total_flags = sum(st.flag_counts.values())
+                            if total_flags > 0:
+                                s0_count = st.flag_counts.get("S0", 0)
+                                if s0_count >= 10:  # Ít nhất 10 S0 packets
+                                    s0_rate = s0_count / total_flags
+                                    if s0_rate > 0.4:  # >40% là S0
+                                        boost_factor = 1.0 + (s0_rate - 0.4) * 0.5  # Max +30%
+                                        pr = min(0.99, pr * boost_factor)
+                                        boost_applied = True
+                                        print(f"🔥 TCP BOOSTED: {original_prob:.3f}→{pr:.3f} (S0={s0_count}/{total_flags}={s0_rate:.2f})")
+                        
+                        # === UDP FLOOD BOOSTING ===
+                        elif proto == "udp":
+                            total_pkts = st.pkt_src + st.pkt_dst
+                            if total_pkts >= 20:  # Ít nhất 20 packets
+                                # Kiểm tra packet imbalance (nhiều src, ít dst)
+                                if st.pkt_dst > 0:
+                                    imbalance = st.pkt_src / st.pkt_dst
+                                else:
+                                    imbalance = 100.0
+                                
+                                if imbalance > 5.0:  # Tỉ lệ >5:1 = flood!
+                                    boost_factor = 1.0 + min(0.4, (imbalance - 5.0) / 20.0)  # Max +40%
+                                    pr = min(0.99, pr * boost_factor)
+                                    boost_applied = True
+                                    print(f"🔥 UDP BOOSTED: {original_prob:.3f}→{pr:.3f} (imbalance={imbalance:.1f}:1 pkts={total_pkts})")
+                        
+                        # === ICMP FLOOD BOOSTING ===
+                        elif proto == "icmp":
+                            total_pkts = st.pkt_src + st.pkt_dst
+                            if total_pkts >= 20:  # Ít nhất 20 ICMP packets
+                                # ICMP flood: nhiều echo request, ít reply
+                                if st.pkt_dst > 0:
+                                    imbalance = st.pkt_src / st.pkt_dst
+                                else:
+                                    imbalance = 100.0
+                                
+                                if imbalance > 3.0:  # ICMP >3:1 = flood
+                                    boost_factor = 1.0 + min(0.35, (imbalance - 3.0) / 15.0)  # Max +35%
+                                    pr = min(0.99, pr * boost_factor)
+                                    boost_applied = True
+                                    print(f"🔥 ICMP BOOSTED: {original_prob:.3f}→{pr:.3f} (imbalance={imbalance:.1f}:1 pkts={total_pkts})")
+                    
                     # Post-processing enabled (filters obvious false positives)
                     should_alert = self._post_process_alert(k, pr, st)
                     
                     if p == 1 and should_alert:
                         alert_count += 1
-                        sip, sport, dip, dport, proto = k
                         attack_type = self._determine_attack_type(k, st)
                         # Thêm context: pkts, flags, prob để debug
                         total_pkts = st.pkt_src + st.pkt_dst
