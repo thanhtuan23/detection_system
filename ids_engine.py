@@ -131,12 +131,17 @@ class IDSEngine:
 
     # 🆕 Theo dõi flow nhỏ để phát hiện hping3/distributed attacks
         self.small_flow_tracker = defaultdict(lambda: {'count': 0, 'last_reset': time.time()})
+        # 🔥 NEW: Global flow counter để phát hiện spoofed-IP DoS (--rand-source)
+        self.global_flow_tracker = {'count': 0, 'last_reset': time.time()}
         try:
             self.small_flow_threshold = config.getint('Detection', 'small_flow_threshold', fallback=50)
             self.small_flow_window = config.getint('Detection', 'small_flow_window', fallback=5)
+            # 🔥 NEW: Global threshold (tổng flows từ MỌI IP)
+            self.global_flow_threshold = config.getint('Detection', 'global_flow_threshold', fallback=100)
         except Exception:
-            self.small_flow_threshold = 50  # 50 flow nhỏ trong 5s = DoS
+            self.small_flow_threshold = 50  # 50 flow nhỏ/IP trong 5s = DoS
             self.small_flow_window = 5
+            self.global_flow_threshold = 100  # 100 total flows trong 5s = DDoS
 
     # Bộ nhớ vòng để tính các chỉ số count/srv_count theo cửa sổ
         self.host_events = deque(maxlen=100000)
@@ -224,15 +229,30 @@ class IDSEngine:
             tracker['count'] = 0
             tracker['last_reset'] = current_time
         
-        # Tăng đếm flow nhỏ
+        # Tăng đếm flow nhỏ per-IP
         tracker['count'] += 1
         
-        # Nếu IP tạo quá nhiều flow nhỏ → Nghi ngờ DoS (hping3)
+        # 🔥 NEW: Track global flow count (across ALL IPs)
+        global_tracker = self.global_flow_tracker
+        if current_time - global_tracker['last_reset'] > self.small_flow_window:
+            global_tracker['count'] = 0
+            global_tracker['last_reset'] = current_time
+        global_tracker['count'] += 1
+        
+        # Check 1: Nếu 1 IP tạo quá nhiều flow nhỏ → Nghi ngờ DoS (hping3)
         if tracker['count'] > self.small_flow_threshold:
-            print(f"⚠️ Suspicious: {src_ip} created {tracker['count']} small flows in {self.small_flow_window}s")
+            print(f"⚠️ Suspicious (per-IP): {src_ip} created {tracker['count']} small flows in {self.small_flow_window}s")
             self.attack_logger.warning(
                 f"⚠️ Suspicious small flows: {src_ip} created {tracker['count']} "
                 f"flows < {self.min_pkts} packets in {self.small_flow_window}s"
+            )
+            return True  # Classify để AI xác nhận
+        
+        # 🔥 Check 2: Nếu TỔNG flows (mọi IP) quá cao → DDoS/Spoofed-IP attack
+        if global_tracker['count'] > self.global_flow_threshold:
+            self.attack_logger.warning(
+                f"⚠️ Global flood: {global_tracker['count']} total flows < {self.min_pkts} packets "
+                f"in {self.small_flow_window}s (likely spoofed IPs)"
             )
             return True  # Classify để AI xác nhận
         
