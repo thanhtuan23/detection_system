@@ -476,7 +476,11 @@ class IDSEngine:
 
                 # Phát cảnh báo (nếu vượt ngưỡng + qua hậu xử lý)
                 for k, p, pr, st in zip(keys, preds, probs, states):
-                    if p == 1 and self._post_process_alert(k, pr, st):
+                    # 🔍 DEBUG: Tạm tắt post-processing để test
+                    should_alert = True  # Luôn alert nếu prob > threshold
+                    # should_alert = self._post_process_alert(k, pr, st)  # Bật lại sau khi test
+                    
+                    if p == 1 and should_alert:
                         alert_count += 1
                         sip, sport, dip, dport, proto = k
                         attack_type = self._determine_attack_type(k, st)
