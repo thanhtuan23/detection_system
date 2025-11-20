@@ -129,6 +129,15 @@ class IDSEngine:
         self.flows = {}
         self.lock = threading.Lock()
 
+    # 🆕 Theo dõi flow nhỏ để phát hiện hping3/distributed attacks
+        self.small_flow_tracker = defaultdict(lambda: {'count': 0, 'last_reset': time.time()})
+        try:
+            self.small_flow_threshold = config.getint('Detection', 'small_flow_threshold', fallback=50)
+            self.small_flow_window = config.getint('Detection', 'small_flow_window', fallback=5)
+        except Exception:
+            self.small_flow_threshold = 50  # 50 flow nhỏ trong 5s = DoS
+            self.small_flow_window = 5
+
     # Bộ nhớ vòng để tính các chỉ số count/srv_count theo cửa sổ
         self.host_events = deque(maxlen=100000)
 
@@ -183,6 +192,49 @@ class IDSEngine:
         self.model = None       # Keras model hoặc sklearn estimator
         self.preprocess = None  # sklearn ColumnTransformer
 
+    # -------- Smart Flow Classification Decision ---------
+    def _should_classify(self, flow_key, flow_data):
+        """
+        Quyết định flow có cần gửi AI phân loại không.
+        Cho phép:
+        1. Flow lớn (>= min_packets) → Luôn classify
+        2. Flow nhỏ nhưng từ IP nghi ngờ (nhiều flow nhỏ) → Classify để phát hiện hping3
+        """
+        pkt_count = flow_data.get('packet_count', 0)
+        total_bytes = flow_data.get('total_bytes', 0)
+        
+        # Rule 1: Flow đủ lớn → Classify ngay
+        if pkt_count >= self.min_pkts and total_bytes >= self.min_bytes:
+            return True
+        
+        # Rule 2: Flow nhỏ → Kiểm tra IP có nghi ngờ không
+        src_ip = flow_key.split('-')[0] if '-' in flow_key else None
+        if not src_ip:
+            return False
+        
+        # Đếm số flow nhỏ từ IP này
+        current_time = time.time()
+        with self.lock:
+            tracker = self.small_flow_tracker[src_ip]
+            
+            # Reset bộ đếm nếu quá window
+            if current_time - tracker['last_reset'] > self.small_flow_window:
+                tracker['count'] = 0
+                tracker['last_reset'] = current_time
+            
+            # Tăng đếm flow nhỏ
+            tracker['count'] += 1
+            
+            # Nếu IP tạo quá nhiều flow nhỏ → Nghi ngờ DoS (hping3)
+            if tracker['count'] > self.small_flow_threshold:
+                self.attack_logger.warning(
+                    f"⚠️ Suspicious small flows: {src_ip} created {tracker['count']} "
+                    f"flows < {self.min_pkts} packets in {self.small_flow_window}s"
+                )
+                return True  # Classify để AI xác nhận
+        
+        return False  # Flow nhỏ từ IP bình thường → Bỏ qua
+
     # -------- Hot reload configuration (áp dụng thay đổi động) ---------
     def apply_config(self, live_cfg):
         """Update runtime parameters from LiveConfig without restarting threads."""
@@ -230,6 +282,14 @@ class IDSEngine:
                 self.port_scan_threshold = new_ps_threshold
                 self.port_scan.threshold = new_ps_threshold
                 print(f"[Config] Port scan threshold updated → {new_ps_threshold}")
+
+            # 🆕 Cập nhật small flow detection parameters
+            new_small_threshold = live_cfg.getint('Detection', 'small_flow_threshold', fallback=self.small_flow_threshold)
+            new_small_window = live_cfg.getint('Detection', 'small_flow_window', fallback=self.small_flow_window)
+            if new_small_threshold != self.small_flow_threshold or new_small_window != self.small_flow_window:
+                self.small_flow_threshold = new_small_threshold
+                self.small_flow_window = new_small_window
+                print(f"[Config] Small flow detection updated → threshold={new_small_threshold} window={new_small_window}s")
 
             print(f"[Config] IDS updated: window={self.window} min_pkts={self.min_pkts} min_bytes={self.min_bytes} threshold={self.alert_threshold} port_scan_threshold={self.port_scan_threshold} dos_packet_rate={self.dos_packet_rate} dos_reset_seconds={self.dos_reset_seconds}")
         except Exception as e:
@@ -405,7 +465,12 @@ class IDSEngine:
                         filtered_count += 1
                         continue
                     
-                    if total_pkts >= self.min_pkts and total_bytes >= self.min_bytes:
+                    # 🆕 Sử dụng logic thông minh: classify cả flow lớn VÀ flow nhỏ từ IP nghi ngờ
+                    flow_data = {
+                        'packet_count': total_pkts,
+                        'total_bytes': total_bytes
+                    }
+                    if self._should_classify(k, flow_data):
                         filtered_flows[k] = state
                     else:
                         filtered_count += 1
@@ -488,6 +553,8 @@ class IDSEngine:
 
                 # 🆕 LEVEL 4: CONFIDENCE BOOSTING - Chạy TRƯỚC threshold check
                 # Boost probability dựa trên đặc trưng DoS rõ ràng (không cần p==1)
+                # Ngưỡng boosting ĐỘNG dựa trên min_packets từ config
+                boost_min_pkts = max(self.min_pkts, 3)  # Tối thiểu 3 packets để có pattern
                 boosted_probs = []
                 for idx, (k, pr, st) in enumerate(zip(keys, probs, states)):
                     original_prob = pr
@@ -497,12 +564,13 @@ class IDSEngine:
                     # === TCP SYN FLOOD BOOSTING ===
                     if proto == "tcp":
                         total_flags = sum(st.flag_counts.values())
-                        if total_flags > 0:
+                        if total_flags >= boost_min_pkts:  # Động: 3+ packets
                             s0_count = st.flag_counts.get("S0", 0)
-                            if s0_count >= 10:  # Ít nhất 10 S0 packets
+                            if s0_count >= boost_min_pkts:  # Có đủ S0 flags
                                 s0_rate = s0_count / total_flags
                                 if s0_rate > 0.4:  # >40% là S0
-                                    boost_factor = 1.0 + (s0_rate - 0.4) * 0.5  # Max +30%
+                                    # Boosting MẠNH cho flow lớn: +100% nếu S0_rate=100%
+                                    boost_factor = 1.0 + (s0_rate - 0.4) * 1.67  # Max +100%
                                     pr = min(0.99, pr * boost_factor)
                                     boost_applied = True
                                     print(f"🔥 TCP BOOSTED: {original_prob:.3f}→{pr:.3f} (S0={s0_count}/{total_flags}={s0_rate:.2f})")
@@ -510,7 +578,7 @@ class IDSEngine:
                     # === UDP FLOOD BOOSTING ===
                     elif proto == "udp":
                         total_pkts = st.pkt_src + st.pkt_dst
-                        if total_pkts >= 20:  # Ít nhất 20 packets
+                        if total_pkts >= boost_min_pkts:  # Động: 3+ packets
                             # Kiểm tra packet imbalance (nhiều src, ít dst)
                             if st.pkt_dst > 0:
                                 imbalance = st.pkt_src / st.pkt_dst
@@ -518,7 +586,8 @@ class IDSEngine:
                                 imbalance = 100.0
                             
                             if imbalance > 5.0:  # Tỉ lệ >5:1 = flood!
-                                boost_factor = 1.0 + min(0.4, (imbalance - 5.0) / 20.0)  # Max +40%
+                                # Boosting CỰC MẠNH cho UDP flood: +150% với imbalance=100:1
+                                boost_factor = 1.0 + min(1.5, (imbalance - 5.0) / 63.0)  # Max +150%
                                 pr = min(0.99, pr * boost_factor)
                                 boost_applied = True
                                 print(f"🔥 UDP BOOSTED: {original_prob:.3f}→{pr:.3f} (imbalance={imbalance:.1f}:1 pkts={total_pkts})")
@@ -526,7 +595,7 @@ class IDSEngine:
                     # === ICMP FLOOD BOOSTING ===
                     elif proto == "icmp":
                         total_pkts = st.pkt_src + st.pkt_dst
-                        if total_pkts >= 20:  # Ít nhất 20 ICMP packets
+                        if total_pkts >= boost_min_pkts:  # Động: 3+ packets
                             # ICMP flood: nhiều echo request, ít reply
                             if st.pkt_dst > 0:
                                 imbalance = st.pkt_src / st.pkt_dst
@@ -534,7 +603,8 @@ class IDSEngine:
                                 imbalance = 100.0
                             
                             if imbalance > 3.0:  # ICMP >3:1 = flood
-                                boost_factor = 1.0 + min(0.35, (imbalance - 3.0) / 15.0)  # Max +35%
+                                # Boosting MẠNH cho ICMP flood: +120% với imbalance=100:1
+                                boost_factor = 1.0 + min(1.2, (imbalance - 3.0) / 81.0)  # Max +120%
                                 pr = min(0.99, pr * boost_factor)
                                 boost_applied = True
                                 print(f"🔥 ICMP BOOSTED: {original_prob:.3f}→{pr:.3f} (imbalance={imbalance:.1f}:1 pkts={total_pkts})")
@@ -544,6 +614,27 @@ class IDSEngine:
                 # Re-calculate preds với boosted probabilities
                 probs = np.array(boosted_probs)
                 preds = (probs >= self.alert_threshold).astype(int)
+                
+                # 🆕 RULE-BASED FALLBACK: Force alert cho UDP/ICMP với đặc trưng DoS rõ ràng
+                # (Dù prob thấp, nếu imbalance cực cao + nhiều packets = chắc chắn flood)
+                # Ngưỡng fallback ĐỘNG: 10x boost_min_pkts hoặc tối thiểu 30
+                fallback_min_pkts = max(boost_min_pkts * 10, 30)
+                for idx, (k, pr, st) in enumerate(zip(keys, probs, states)):
+                    sip, sport, dip, dport, proto = k
+                    total_pkts = st.pkt_src + st.pkt_dst
+                    
+                    if proto in ["udp", "icmp"] and total_pkts >= fallback_min_pkts:  # Flow lớn
+                        if st.pkt_dst > 0:
+                            imbalance = st.pkt_src / st.pkt_dst
+                        else:
+                            imbalance = 100.0
+                        
+                        # Nếu imbalance >20:1 và nhiều packets = FLOOD chắc chắn!
+                        if imbalance > 20.0:
+                            old_pred = preds[idx]
+                            preds[idx] = 1  # Force alert
+                            if old_pred == 0:  # Chỉ log nếu thay đổi
+                                print(f"🚨 RULE-BASED OVERRIDE: {proto.upper()} flood detected (prob={pr:.3f}<{self.alert_threshold} but imbalance={imbalance:.1f}:1 pkts={total_pkts})")
                 
                 # Phát cảnh báo (nếu vượt ngưỡng + qua hậu xử lý)
                 for k, p, pr, st in zip(keys, preds, probs, states):
