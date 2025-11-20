@@ -626,8 +626,8 @@ class IDSEngine:
                                 imbalance = 100.0
                             
                             if imbalance > 3.0:  # ICMP >3:1 = flood
-                                # Boosting MẠNH cho ICMP flood: +120% với imbalance=100:1
-                                boost_factor = 1.0 + min(1.2, (imbalance - 3.0) / 81.0)  # Max +120%
+                                # 🔥 Boosting MẠNH cho ICMP flood: +200% với imbalance=100:1
+                                boost_factor = 1.0 + min(2.0, (imbalance - 3.0) / 48.5)  # Max +200%
                                 pr = min(0.99, pr * boost_factor)
                                 boost_applied = True
                                 print(f"🔥 ICMP BOOSTED: {original_prob:.3f}→{pr:.3f} (imbalance={imbalance:.1f}:1 pkts={total_pkts})")
@@ -640,8 +640,8 @@ class IDSEngine:
                 
                 # 🆕 RULE-BASED FALLBACK: Force alert cho TCP/UDP/ICMP với đặc trưng DoS rõ ràng
                 # (Dù prob thấp, nếu pattern rõ ràng = chắc chắn flood)
-                # Ngưỡng fallback ĐỘNG: 10x boost_min_pkts hoặc tối thiểu 30
-                fallback_min_pkts = max(boost_min_pkts * 10, 30)
+                # 🔥 Ngưỡng fallback THẤP: 3x boost_min_pkts hoặc tối thiểu 10 (cho UDP/ICMP nhỏ)
+                fallback_min_pkts = max(boost_min_pkts * 3, 10)
                 for idx, (k, pr, st) in enumerate(zip(keys, probs, states)):
                     sip, sport, dip, dport, proto = k
                     total_pkts = st.pkt_src + st.pkt_dst
@@ -682,39 +682,61 @@ class IDSEngine:
                     should_alert = self._post_process_alert(k, pr, st)
                     
                     if p == 1 and should_alert:
-                        alert_count += 1
                         attack_type = self._determine_attack_type(k, st)
-                        # Thêm context: pkts, flags, prob để debug
                         total_pkts = st.pkt_src + st.pkt_dst
                         flags_str = ",".join([f"{flag}:{count}" for flag, count in st.flag_counts.items() if count > 0])
-                        alert_msg = f"ALERT {attack_type} proto={proto} {sip}:{sport} -> {dip}:{dport} [pkts={total_pkts} prob={pr:.3f} flags={flags_str}]"
-                        # Dùng giờ hệ thống địa phương, bỏ hậu tố Z (UTC)
-                        now_str_local = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                        print(f"[{now_str_local}] {alert_msg}")
-                        self.attack_logger.info(alert_msg)
+                        
+                        # 🔥 FIX: Chỉ alert khi EXTERNAL → LOCAL (inbound attack)
+                        # Bỏ qua:
+                        # 1. LOCAL → EXTERNAL (outbound traffic, server browsing web)
+                        # 2. LOCAL → LOCAL (internal traffic)
+                        # 3. ICMP response từ server (legitimate ping replies)
+                        
+                        # Case 1 & 2: Skip LOCAL → * (outbound/internal)
+                        if self._is_local_ip(sip):
+                            # Case 3: Nếu là ICMP từ local, check xem có phải reply hợp lệ không
+                            if proto == "icmp" and total_pkts < 20:
+                                # ICMP Echo Reply có đặc điểm: imbalance gần 1:1
+                                if st.pkt_dst > 0:
+                                    imbalance = st.pkt_src / st.pkt_dst
+                                    if imbalance < 2.0:  # Gần cân bằng = normal reply
+                                        continue  # Skip ICMP replies
+                            # Skip tất cả traffic từ local server
+                            continue
+                        
+                        # 🎯 Chỉ alert khi: EXTERNAL → LOCAL (inbound attack)
+                        if not self._is_local_ip(sip) and self._is_local_ip(dip):
+                            alert_count += 1
+                            # Attacker → Victim (correct direction)
+                            alert_msg = f"ALERT {attack_type} proto={proto} {sip}:{sport} -> {dip}:{dport} [pkts={total_pkts} prob={pr:.3f} flags={flags_str}]"
+                            
+                            # Dùng giờ hệ thống địa phương
+                            now_str_local = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            print(f"[{now_str_local}] {alert_msg}")
+                            self.attack_logger.info(alert_msg)
 
-                        alert_data = {
-                            "type": attack_type.lower(),
-                            "detail_type": attack_type,
-                            "src_ip": sip,
-                            "src_port": sport,
-                            "dst_ip": dip,
-                            "dst_port": dport,
-                            "proto": proto,
-                            "probability": float(pr),
-                            "time": now_str_local,
-                            "message": alert_msg,
-                            "bytes_src": st.src_bytes,
-                            "bytes_dst": st.dst_bytes,
-                            "rate_src": st.rate_src,
-                            "rate_dst": st.rate_dst,
-                            "duration": st.last_ts - st.first_ts,
-                            "pkt_src": st.pkt_src,
-                            "pkt_dst": st.pkt_dst,
-                        }
-                        self.alert_queue.put(alert_data)
-                        self.recent_alerts.append(alert_data)
-                        self.stats["alerts_generated"] += 1
+                            alert_data = {
+                                "type": attack_type.lower(),
+                                "detail_type": attack_type,
+                                "src_ip": sip,
+                                "src_port": sport,
+                                "dst_ip": dip,
+                                "dst_port": dport,
+                                "proto": proto,
+                                "probability": float(pr),
+                                "time": now_str_local,
+                                "message": alert_msg,
+                                "bytes_src": st.src_bytes,
+                                "bytes_dst": st.dst_bytes,
+                                "rate_src": st.rate_src,
+                                "rate_dst": st.rate_dst,
+                                "duration": st.last_ts - st.first_ts,
+                                "pkt_src": st.pkt_src,
+                                "pkt_dst": st.pkt_dst,
+                            }
+                            self.alert_queue.put(alert_data)
+                            self.recent_alerts.append(alert_data)
+                            self.stats["alerts_generated"] += 1
 
                 # Log summary if alerts were generated
                 if alert_count > 0:
