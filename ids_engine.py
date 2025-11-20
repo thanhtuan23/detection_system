@@ -396,23 +396,21 @@ class IDSEngine:
                 # Lọc các luồng chưa đủ số gói / bytes tối thiểu
                 filtered_flows = {}
                 for k, state in list(self.flows.items()):
+                    sip, sport, dip, dport, proto = k
                     total_pkts = state.pkt_src + state.pkt_dst
                     total_bytes = state.src_bytes + state.dst_bytes
+                    
+                    # Bỏ qua flows từ local_ips với port < 1024 (server response traffic)
+                    if self._is_local_ip(sip) and sport < 1024:
+                        filtered_count += 1
+                        continue
+                    
                     if total_pkts >= self.min_pkts and total_bytes >= self.min_bytes:
                         filtered_flows[k] = state
                     else:
                         filtered_count += 1
-                        # 🔍 DEBUG: Log flows bị lọc nếu có nhiều packets
-                        if total_pkts >= 10:
-                            print(f"🚫 Flow FILTERED: {k[0]}:{k[1]}→{k[2]}:{k[3]} pkts={total_pkts}/{self.min_pkts} bytes={total_bytes}/{self.min_bytes}")
-
-                # 🔍 DEBUG: Log summary
-                analyzed = len(filtered_flows)
-                print(f"📊 Window summary: total_flows={total_flows}, filtered={filtered_count}, analyzed={analyzed}")
 
                 if not filtered_flows:
-                    if total_flows > 0:
-                        print(f"⚠️ NO FLOWS analyzed (all {total_flows} filtered out)!")
                     self.flows.clear()
                     continue
 
@@ -468,24 +466,22 @@ class IDSEngine:
                 probs = self._predict_probabilities(X).ravel()
                 preds = (probs >= self.alert_threshold).astype(int)
 
-                # 🔍 DEBUG: Log predictions
+                # Generate alerts for flows exceeding threshold
                 alert_count = 0
-                for idx, (k, pr) in enumerate(zip(keys, probs)):
-                    if pr > 0.1:  # Log cả flows có prob thấp
-                        print(f"🔮 Prediction #{idx}: {k[0]}→{k[2]}:{k[3]} prob={pr:.3f} threshold={self.alert_threshold:.3f} {'✅ALERT' if pr >= self.alert_threshold else '❌SKIP'}")
 
                 # Phát cảnh báo (nếu vượt ngưỡng + qua hậu xử lý)
                 for k, p, pr, st in zip(keys, preds, probs, states):
-                    # 🔍 DEBUG: Tạm tắt post-processing để test
-                    should_alert = True  # Luôn alert nếu prob > threshold
-                    # should_alert = self._post_process_alert(k, pr, st)  # Bật lại sau khi test
+                    # Post-processing enabled (filters obvious false positives)
+                    should_alert = self._post_process_alert(k, pr, st)
                     
                     if p == 1 and should_alert:
                         alert_count += 1
                         sip, sport, dip, dport, proto = k
                         attack_type = self._determine_attack_type(k, st)
-                        # Rút gọn log: bỏ xác suất & kích thước cửa sổ khỏi chuỗi log để ngắn gọn hơn
-                        alert_msg = f"ALERT {attack_type} proto={proto} {sip}:{sport} -> {dip}:{dport}"
+                        # Thêm context: pkts, flags, prob để debug
+                        total_pkts = st.pkt_src + st.pkt_dst
+                        flags_str = ",".join([f"{flag}:{count}" for flag, count in st.flag_counts.items() if count > 0])
+                        alert_msg = f"ALERT {attack_type} proto={proto} {sip}:{sport} -> {dip}:{dport} [pkts={total_pkts} prob={pr:.3f} flags={flags_str}]"
                         # Dùng giờ hệ thống địa phương, bỏ hậu tố Z (UTC)
                         now_str_local = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                         print(f"[{now_str_local}] {alert_msg}")
@@ -514,11 +510,9 @@ class IDSEngine:
                         self.recent_alerts.append(alert_data)
                         self.stats["alerts_generated"] += 1
 
-                # 🔍 DEBUG: Log alert summary
+                # Log summary if alerts were generated
                 if alert_count > 0:
-                    print(f"🚨 Generated {alert_count} ML-based alerts this window")
-                elif analyzed > 0:
-                    print(f"ℹ️ No alerts (analyzed {analyzed} flows, max_prob={max(probs):.3f})")
+                    print(f"[*] Generated {alert_count} ML-based alerts this window")
 
                 # Reset toàn bộ state để chuẩn bị cửa sổ kế tiếp
                 self.flows.clear()

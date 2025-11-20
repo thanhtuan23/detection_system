@@ -75,11 +75,13 @@ class FlowState:
         # ERROR RATES: tính từ flag_counts (QUAN TRỌNG cho DoS/Probe detection)
         total_flags = sum(self.flag_counts.values())
         if total_flags > 0:
-            # serror: SYN errors (S0=half-open, REJ=rejected, RSTR/RSTO=reset)
+            # serror: CHỈ tính S0 (half-open) và REJ (rejected)
+            # Không tính RSTR/RSTO vì có thể là traffic bình thường
             serror_count = self.flag_counts.get("S0", 0) + self.flag_counts.get("REJ", 0)
             serror_rate = float(serror_count) / total_flags
-            # rerror: REJ errors (connection refused)
-            rerror_count = self.flag_counts.get("REJ", 0)
+            
+            # rerror: RST errors (RSTR/RSTO)
+            rerror_count = self.flag_counts.get("RSTR", 0) + self.flag_counts.get("RSTO", 0)
             rerror_rate = float(rerror_count) / total_flags
         else:
             serror_rate = 0.0
@@ -98,10 +100,6 @@ class FlowState:
         
         # is_guest_login: TOP #16 feature (2.42%)
         is_guest_login = 0  # Thường = 0 trừ khi có evidence cụ thể
-        
-        # 🔍 DEBUG: Log key rates cho flows nghi ngờ
-        if count > 20 or (self.pkt_src + self.pkt_dst) > 50:
-            print(f"   same_srv_rate={same_srv_rate:.3f} serror_rate={serror_rate:.3f} logged_in={logged_in}")
 
         # NSL-KDD core columns - TÊN PHẢI KHỚP CHÍNH XÁC VỚI TRAINING!
         row = {

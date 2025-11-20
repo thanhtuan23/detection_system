@@ -80,9 +80,10 @@ def post_process_alert(key, prob: float, state, previous_alerts: Dict[str, Tuple
     if dport == 443 or sport == 443:
         return prob > 0.95
 
-    # Nội bộ cần ngưỡng cao hơn
+    # Nội bộ lab environment: relaxed threshold for testing
+    # (Production: increase to 0.85 to reduce false positives)
     if is_private_ip(sip) and is_private_ip(dip):
-        return prob > 0.85
+        return prob > 0.5
 
     return True
 
