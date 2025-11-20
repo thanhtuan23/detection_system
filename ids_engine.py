@@ -474,8 +474,9 @@ class IDSEngine:
                     total_pkts = state.pkt_src + state.pkt_dst
                     total_bytes = state.src_bytes + state.dst_bytes
                     
-                    # Bỏ qua flows từ local_ips với port < 1024 (server response traffic)
-                    if self._is_local_ip(sip) and sport < 1024:
+                    # 🔥 FIX: Chỉ bỏ qua LOCAL server response (cả SIP và DIP đều local)
+                    # Không filter external traffic (hping3 randomize sport)
+                    if self._is_local_ip(sip) and self._is_local_ip(dip) and sport < 1024:
                         filtered_count += 1
                         continue
                     
@@ -585,14 +586,17 @@ class IDSEngine:
                         total_flags = sum(st.flag_counts.values())
                         if total_flags >= boost_min_pkts:  # Động: 3+ packets
                             s0_count = st.flag_counts.get("S0", 0)
-                            if s0_count >= boost_min_pkts:  # Có đủ S0 flags
-                                s0_rate = s0_count / total_flags
-                                if s0_rate > 0.4:  # >40% là S0
-                                    # Boosting MẠNH cho flow lớn: +100% nếu S0_rate=100%
-                                    boost_factor = 1.0 + (s0_rate - 0.4) * 1.67  # Max +100%
+                            rej_count = st.flag_counts.get("REJ", 0)
+                            # ✅ Đếm cả S0 và REJ là dấu hiệu tấn công
+                            attack_flags = s0_count + rej_count
+                            if attack_flags >= boost_min_pkts:  # Có đủ attack flags
+                                attack_rate = attack_flags / total_flags
+                                if attack_rate > 0.4:  # >40% là attack flags
+                                    # Boosting CỰC MẠNH: +200% nếu attack_rate=100%
+                                    boost_factor = 1.0 + (attack_rate - 0.4) * 3.33  # Max +200%
                                     pr = min(0.99, pr * boost_factor)
                                     boost_applied = True
-                                    print(f"🔥 TCP BOOSTED: {original_prob:.3f}→{pr:.3f} (S0={s0_count}/{total_flags}={s0_rate:.2f})")
+                                    print(f"🔥 TCP BOOSTED: {original_prob:.3f}→{pr:.3f} (S0+REJ={attack_flags}/{total_flags}={attack_rate:.2f})")
                         
                     # === UDP FLOOD BOOSTING ===
                     elif proto == "udp":
@@ -634,14 +638,30 @@ class IDSEngine:
                 probs = np.array(boosted_probs)
                 preds = (probs >= self.alert_threshold).astype(int)
                 
-                # 🆕 RULE-BASED FALLBACK: Force alert cho UDP/ICMP với đặc trưng DoS rõ ràng
-                # (Dù prob thấp, nếu imbalance cực cao + nhiều packets = chắc chắn flood)
+                # 🆕 RULE-BASED FALLBACK: Force alert cho TCP/UDP/ICMP với đặc trưng DoS rõ ràng
+                # (Dù prob thấp, nếu pattern rõ ràng = chắc chắn flood)
                 # Ngưỡng fallback ĐỘNG: 10x boost_min_pkts hoặc tối thiểu 30
                 fallback_min_pkts = max(boost_min_pkts * 10, 30)
                 for idx, (k, pr, st) in enumerate(zip(keys, probs, states)):
                     sip, sport, dip, dport, proto = k
                     total_pkts = st.pkt_src + st.pkt_dst
                     
+                    # TCP SYN/REJ flood detection
+                    if proto == "tcp" and total_pkts >= boost_min_pkts:
+                        total_flags = sum(st.flag_counts.values())
+                        if total_flags > 0:
+                            s0_count = st.flag_counts.get("S0", 0)
+                            rej_count = st.flag_counts.get("REJ", 0)
+                            attack_flags = s0_count + rej_count
+                            attack_rate = attack_flags / total_flags
+                            # Nếu >80% là S0/REJ → Chắc chắn SYN flood!
+                            if attack_rate >= 0.8:
+                                old_pred = preds[idx]
+                                preds[idx] = 1  # Force alert
+                                if old_pred == 0:
+                                    print(f"🚨 RULE-BASED: TCP SYN flood (S0={s0_count} REJ={rej_count} rate={attack_rate:.2f} prob={pr:.3f})")
+                    
+                    # UDP/ICMP flood detection
                     if proto in ["udp", "icmp"] and total_pkts >= fallback_min_pkts:  # Flow lớn
                         if st.pkt_dst > 0:
                             imbalance = st.pkt_src / st.pkt_dst
