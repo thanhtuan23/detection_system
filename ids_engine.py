@@ -410,7 +410,7 @@ class IDSEngine:
                 
                 # 🔥 Check if destination is under attack (many sources → one target)
                 for dst_key, flow_keys in dst_flow_tracker.items():
-                    if len(flow_keys) > self.global_flow_threshold:
+                    if len(flow_keys) > self.flow_classifier.global_flow_threshold:
                         self.attack_logger.warning(
                             f"Destination flood: {dst_key[0]}:{dst_key[1]} receiving {len(flow_keys)} flows"
                         )
