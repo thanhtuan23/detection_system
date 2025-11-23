@@ -34,7 +34,7 @@ class AlertManager:
             return True  # Skip all LOCAL source traffic
         return False
     
-    def generate_alert(self, key, prob, state, attack_type, local_ips):
+    def generate_alert(self, key, prob, state, attack_type, local_ips, flow_count=1):
         """Generate and queue alert if conditions are met"""
         sip, sport, dip, dport, proto = key
         
@@ -50,7 +50,9 @@ class AlertManager:
             total_pkts = state.pkt_src + state.pkt_dst
             flags_str = ",".join([f"{flag}:{count}" for flag, count in state.flag_counts.items() if count > 0])
             
-            alert_msg = f"ALERT {attack_type} proto={proto} {sip}:{sport} -> {dip}:{dport} [pkts={total_pkts} prob={prob:.3f} flags={flags_str}]"
+            # Add flow count for grouped attacks (--rand-source, DDoS)
+            flow_info = f" flows={flow_count}" if flow_count > 1 else ""
+            alert_msg = f"ALERT {attack_type} proto={proto} -> {dip}:{dport} [pkts={total_pkts} prob={prob:.3f}{flow_info} flags={flags_str}]"
             now_str_local = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
             print(f"[{now_str_local}] {alert_msg}")

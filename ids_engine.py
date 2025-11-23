@@ -411,10 +411,7 @@ class IDSEngine:
                 # 🔥 Check if destination is under attack (many sources → one target)
                 for dst_key, flow_keys in dst_flow_tracker.items():
                     if len(flow_keys) > self.flow_classifier.global_flow_threshold:
-                        self.attack_logger.warning(
-                            f"Destination flood: {dst_key[0]}:{dst_key[1]} receiving {len(flow_keys)} flows"
-                        )
-                        # Add all flows to classification queue
+                        # Add all flows to classification queue (DDoS/spoofed-IP)
                         for fk in flow_keys:
                             if fk not in filtered_flows and fk in self.flows:
                                 filtered_flows[fk] = self.flows[fk]
@@ -495,15 +492,35 @@ class IDSEngine:
                 preds = self.flow_classifier.apply_rule_based_fallback(keys, probs, states, preds, self.min_pkts)
 
                 
-                # Generate alerts using AlertManager
+                # Generate alerts using AlertManager (group by attack type)
+                attack_summary = {}  # {(dst, proto, attack_type): [flows]}
+                
                 for k, p, pr, st in zip(keys, preds, probs, states):
                     if p == 1 and self._post_process_alert(k, pr, st):
+                        sip, sport, dip, dport, proto = k
                         attack_type = self._determine_attack_type(k, st)
-                        if self.alert_manager.generate_alert(k, pr, st, attack_type, self.local_ips):
-                            alert_count += 1
+                        
+                        # Group attacks by destination + protocol + type
+                        attack_key = (dip, dport, proto, attack_type)
+                        if attack_key not in attack_summary:
+                            attack_summary[attack_key] = []
+                        attack_summary[attack_key].append((k, pr, st))
+                
+                # Generate one alert per attack group
+                for attack_key, flows in attack_summary.items():
+                    dip, dport, proto, attack_type = attack_key
+                    
+                    # Pick representative flow (highest probability)
+                    flows.sort(key=lambda x: x[1], reverse=True)
+                    best_flow = flows[0]
+                    k, pr, st = best_flow
+                    
+                    # Generate grouped alert with flow count
+                    if self.alert_manager.generate_alert(k, pr, st, attack_type, self.local_ips, flow_count=len(flows)):
+                        alert_count += 1
 
                 if alert_count > 0:
-                    print(f"[*] Generated {alert_count} ML-based alerts this window")
+                    print(f"[*] Generated {alert_count} attack alerts this window")
 
                 # Reset toàn bộ state để chuẩn bị cửa sổ kế tiếp
                 self.flows.clear()

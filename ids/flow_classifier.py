@@ -52,21 +52,11 @@ class FlowClassifier:
         
         # Check per-IP threshold
         if tracker['count'] > self.small_flow_threshold:
-            if self.attack_logger:
-                self.attack_logger.warning(
-                    f"Suspicious small flows: {src_ip} created {tracker['count']} "
-                    f"flows < {self.min_pkts} packets in {self.small_flow_window}s"
-                )
-            return True
+            return True  # Classify without logging (reduce spam)
         
         # Check global threshold (DDoS/spoofed-IP detection)
         if global_tracker['count'] > self.global_flow_threshold:
-            if self.attack_logger:
-                self.attack_logger.warning(
-                    f"Global flood: {global_tracker['count']} total flows < {self.min_pkts} packets "
-                    f"in {self.small_flow_window}s (likely spoofed IPs)"
-                )
-            return True
+            return True  # Classify all flows (--rand-source detection)
         
         return False
     
@@ -115,27 +105,32 @@ class FlowClassifier:
     
     def apply_rule_based_fallback(self, keys, probs, states, preds, min_pkts):
         """Force alert for clear DoS patterns even if ML prob is low"""
-        boost_min_pkts = max(min_pkts, 3)
+        boost_min_pkts = max(min_pkts, 1)  # Allow 1+ packets for --rand-source
         fallback_min_pkts = max(boost_min_pkts * 3, 10)
         
         for idx, (k, pr, st) in enumerate(zip(keys, probs, states)):
             sip, sport, dip, dport, proto = k
             total_pkts = st.pkt_src + st.pkt_dst
             
-            # TCP SYN/REJ flood
-            if proto == "tcp" and total_pkts >= boost_min_pkts:
+            # TCP SYN/REJ flood (including --rand-source with 1 SYN packet)
+            if proto == "tcp" and total_pkts >= 1:
                 total_flags = sum(st.flag_counts.values())
                 if total_flags > 0:
                     s0_count = st.flag_counts.get("S0", 0)
                     rej_count = st.flag_counts.get("REJ", 0)
                     attack_rate = (s0_count + rej_count) / total_flags
-                    if attack_rate >= 0.8:
+                    # Lower threshold for single-packet flows (--rand-source)
+                    threshold = 0.5 if total_pkts == 1 else 0.8
+                    if attack_rate >= threshold:
                         preds[idx] = 1
             
-            # UDP/ICMP flood
-            if proto in ["udp", "icmp"] and total_pkts >= fallback_min_pkts:
-                imbalance = st.pkt_src / st.pkt_dst if st.pkt_dst > 0 else 100.0
-                if imbalance > 20.0:
-                    preds[idx] = 1
+            # UDP/ICMP flood (including --rand-source)
+            if proto in ["udp", "icmp"]:
+                if total_pkts >= 1:  # Allow 1+ packets
+                    imbalance = st.pkt_src / st.pkt_dst if st.pkt_dst > 0 else 100.0
+                    # Lower threshold for small flows
+                    threshold = 5.0 if total_pkts <= 3 else 20.0
+                    if imbalance > threshold:
+                        preds[idx] = 1
         
         return preds
