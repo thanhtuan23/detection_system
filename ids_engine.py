@@ -114,7 +114,6 @@ class IDSEngine:
                         line = line.split('#')[0].strip()
                     if line and not line.startswith('#'):
                         self.whitelist_ips.add(line)
-        
         # Load blacklist
         if os.path.exists(self.blacklist_file):
             with open(self.blacklist_file, 'r', encoding='utf-8') as f:
@@ -330,7 +329,9 @@ class IDSEngine:
                         sip, sport, dip, dport, _ = k  # Bỏ proto, không hiển thị
                         
                         # Skip whitelisted IPs (internal network)
-                        if self._is_whitelisted(sip) or self._is_whitelisted(dip):
+                        src_wl = self._is_whitelisted(sip)
+                        dst_wl = self._is_whitelisted(dip)
+                        if src_wl or dst_wl:
                             continue
                         
                         # Force alert if blacklisted
