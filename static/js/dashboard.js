@@ -81,13 +81,13 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(response => response.json())
             .then(alerts => {
                 if (alerts.length === 0) {
-                    alertsTable.innerHTML = '<tr><td colspan="6" class="text-center">No alerts yet</td></tr>';
+                    alertsTable.innerHTML = '<tr><td colspan="4" class="text-center">Chưa có cảnh báo</td></tr>';
                     return;
                 }
                 
                 // Sort alerts by time (newest first)
                 alerts.sort((a, b) => {
-                    return new Date(b.time) - new Date(a.time);
+                    return new Date(b.timestamp) - new Date(a.timestamp);
                 });
                 
                 // Limit to 10 most recent alerts
@@ -100,9 +100,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 recentAlerts.forEach(alert => {
                     const row = document.createElement('tr');
                     
-                    // Time column
+                    // Time column - format to HH:MM:SS
                     const timeCell = document.createElement('td');
-                    timeCell.textContent = alert.time;
+                    const timestamp = new Date(alert.timestamp);
+                    timeCell.textContent = timestamp.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
                     
                     // Type column with badge
                     const typeCell = document.createElement('td');
@@ -143,30 +144,11 @@ document.addEventListener('DOMContentLoaded', function() {
                         destCell.textContent = '?';
                     }
                     
-                    // Protocol column
-                    const protoCell = document.createElement('td');
-                    protoCell.textContent = alert.proto || '?';
-                    
-                    // Probability column
-                    const probCell = document.createElement('td');
-                    if (typeof alert.probability === 'number') {
-                        probCell.textContent = alert.probability.toFixed(3);
-                        if (alert.probability > 0.9) {
-                            probCell.className = 'text-danger fw-bold';
-                        } else if (alert.probability > 0.8) {
-                            probCell.className = 'text-warning fw-bold';
-                        }
-                    } else {
-                        probCell.textContent = 'N/A';
-                    }
-                    
                     // Add cells to row
                     row.appendChild(timeCell);
                     row.appendChild(typeCell);
                     row.appendChild(sourceCell);
                     row.appendChild(destCell);
-                    row.appendChild(protoCell);
-                    // row.appendChild(probCell);
                     
                     // Add row to table
                     alertsTable.appendChild(row);

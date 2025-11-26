@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""
-Ứng dụng web cho Realtime IDS
-"""
 
 import os
 import json
@@ -52,24 +49,8 @@ notifier.apply_config(GLOBAL_CONFIG)
 attack_logger = logging.getLogger("attack_logger")
 
 def log_alert_to_file(alert: dict):
-    """
-    Ghi log chi tiết vào file nếu thật sự cần từ web (mặc định KHÔNG cần vì engine đã ghi).
-    Nếu phải ghi, luôn ưu tiên message chi tiết do engine tạo.
-    """
-    msg = alert.get("message")
-    if not msg:
-        t = (alert.get("detail_type") or alert.get("type") or "Attack")
-        proto = alert.get("proto") or "tcp"
-        sip = alert.get("src_ip") or "-"
-        sport = alert.get("src_port") or "-"
-        dip = alert.get("dst_ip") or "-"
-        dport = alert.get("dst_port") or "-"
-        prob = alert.get("probability")
-        # fallback dạng chi tiết, tránh mẫu "ALERT attack - Probability"
-        if prob is not None:
-            msg = f"ALERT {t} proto={proto} {sip}:{sport} -> {dip}:{dport} prob={float(prob):.3f}"
-        else:
-            msg = f"ALERT {t} proto={proto} {sip}:{sport} -> {dip}:{dport}"
+    """Ghi log (không cần thiết vì engine đã ghi, giữ lại để tương thích)"""
+    msg = alert.get("message", "ATTACK detected")
     attack_logger.info(msg)
 
 # Luồng chuyển tiếp cảnh báo đến notifier
@@ -94,34 +75,15 @@ def login_required(f):
     return decorated_function
 
 # Routes
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    error = None
-    if request.method == 'POST':
-        if request.form['username'] == USERNAME and request.form['password'] == PASSWORD:
-            session['logged_in'] = True
-            return redirect(url_for('index'))
-        else:
-            error = 'Invalid credentials'
-    return render_template('login.html', error=error)
-
-@app.route('/logout')
-def logout():
-    session.pop('logged_in', None)
-    return redirect(url_for('login'))
-
 @app.route('/')
-@login_required
 def index():
     return render_template('index.html', running=ids.running)
 
 @app.route('/logs')
-@login_required
 def logs():
     return render_template('logs.html')
 
 @app.route('/settings')
-@login_required
 def settings():
     # Đọc cấu hình hiện tại
     config = configparser.ConfigParser()
@@ -155,7 +117,6 @@ def settings():
 
 # API endpoints
 @app.route('/api/start', methods=['POST'])
-@login_required
 def start_ids():
     success = ids.start()
     if success and not notifier.running:
@@ -163,38 +124,20 @@ def start_ids():
     return jsonify({'success': success})
 
 @app.route('/api/stop', methods=['POST'])
-@login_required
 def stop_ids():
     ids.stop()
     return jsonify({'success': True})
 
 @app.route('/api/stats')
-@login_required
 def get_stats():
     return jsonify(ids.get_stats())
 
 @app.route('/api/alerts')
-@login_required
 def get_alerts():
-    # Gom các loại tấn công thành 'attack' trên web, nhưng giữ nguyên chi tiết trong log
-    raw_alerts = ids.get_recent_alerts()
-    attack_types = {
-        'attack', 'dos', 'syn_flood', 'udp_flood', 'port_scan', 'brute_force',
-        'web_attack', 'rst_flood', 'fin_flood', 'http_flood'
-    }
-    ui_alerts = []
-    for a in raw_alerts:
-        # Sao chép để không ảnh hưởng dữ liệu gốc dùng cho notifier/log
-        b = dict(a)
-        original_type = (b.get('type') or '').lower()
-        if original_type in attack_types:
-            b['detail_type'] = original_type  # giữ lại loại chi tiết nếu cần hiển thị sau này
-            b['type'] = 'attack'              # gom nhóm cho UI
-        ui_alerts.append(b)
-    return jsonify(ui_alerts)
+    # Simplified: Chỉ có 1 loại alert = "attack"
+    return jsonify(ids.get_recent_alerts())
 
 @app.route('/api/log')
-@login_required
 def get_log():
     lines = 100
     if 'lines' in request.args:
@@ -215,7 +158,6 @@ def get_log():
     return jsonify({'lines': last_lines})
 
 @app.route('/api/settings', methods=['POST'])
-@login_required
 def save_settings():
     payload = request.json or {}
     updates = {}
@@ -254,7 +196,6 @@ def save_settings():
     return jsonify({'success': True, 'hot_reloaded': True})
 
 @app.route('/api/log/stream')
-@login_required
 def stream_log():
     def generate():
         with open('logs/attack.log', 'r', encoding='utf-8', errors='ignore') as f:

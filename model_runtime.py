@@ -83,9 +83,14 @@ def load_model_and_preprocess(preprocess_path: str, model_path: str):
         try:
             with open(metrics_path, 'r', encoding='utf-8') as f:
                 metrics_summary = json.load(f)
-            winner_type = str(metrics_summary.get('winner_type', '')).lower() or None
-            prefer_ml = winner_type == 'ml'
-            best_ml_name = metrics_summary.get('best_ml_name')
+            # Đọc selected_model_name để xác định ML hay DL
+            selected_model = metrics_summary.get('selected_model_name', '')
+            best_ml_name = selected_model
+            
+            # Danh sách ML models
+            ml_models = ['Decision Tree', 'Random Forest', 'Extra Trees', 'KNN', 'CatBoost']
+            prefer_ml = selected_model in ml_models
+            winner_type = 'ml' if prefer_ml else 'dl'
         except Exception:
             prefer_ml = False
             winner_type = None
