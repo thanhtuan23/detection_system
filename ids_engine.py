@@ -34,6 +34,13 @@ import pandas as pd
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 from scapy.all import sniff, IP, TCP, UDP
 
+# NFLOG support for capturing packets BEFORE DNAT
+try:
+    from scapy.arch.linux import nflog_listener
+    NFLOG_AVAILABLE = True
+except ImportError:
+    NFLOG_AVAILABLE = False
+
 # Internal modules
 from logging_utils import setup_logging
 from ids_utils import proto_name, guess_service
@@ -60,9 +67,16 @@ class IDSEngine:
         self.preprocess_path = config.get('Model', 'preprocess_path')
         self.alert_threshold = config.getfloat('Model', 'threshold')
         
+        # Server IPs để filter traffic (chỉ phân tích traffic tới server)
+        self.server_ip = config.get('Network', 'server_ip', fallback='')
+        self.local_ips = set(ip.strip() for ip in config.get('Network', 'local_ips', fallback='').split(',') if ip.strip())
+        if self.server_ip:
+            self.local_ips.add(self.server_ip)
+        
         # Whitelist/Blacklist
         self.whitelist_file = config.get('Filtering', 'whitelist_file', fallback='data/whitelist.txt')
         self.blacklist_file = config.get('Filtering', 'blacklist_file', fallback='data/blacklist.txt')
+        self.ignore_https = config.getboolean('Filtering', 'ignore_https', fallback=True)
         self.whitelist_ips = set()
         self.blacklist_ips = set()
         self._load_lists()
@@ -114,6 +128,10 @@ class IDSEngine:
                         line = line.split('#')[0].strip()
                     if line and not line.startswith('#'):
                         self.whitelist_ips.add(line)
+            print(f"[*] Loaded {len(self.whitelist_ips)} whitelist entries")
+        else:
+            print(f"[!] Whitelist file not found: {self.whitelist_file}")
+        
         # Load blacklist
         if os.path.exists(self.blacklist_file):
             with open(self.blacklist_file, 'r', encoding='utf-8') as f:
@@ -243,6 +261,21 @@ class IDSEngine:
         try:
             if not pkt.haslayer(IP):
                 return
+            
+            # Filter: CHỈ phân tích traffic tới server (destination = local_ips)
+            # Bỏ qua traffic từ server ra ngoài hoặc traffic không liên quan
+            dst_ip = pkt[IP].dst
+            if self.local_ips and dst_ip not in self.local_ips:
+                return  # Bỏ qua traffic không tới server
+            
+            # Ignore HTTPS traffic (port 443)
+            if self.ignore_https:
+                if pkt.haslayer(TCP):
+                    if pkt[TCP].dport == 443 or pkt[TCP].sport == 443:
+                        return
+                elif pkt.haslayer(UDP):
+                    if pkt[UDP].dport == 443 or pkt[UDP].sport == 443:
+                        return
             
             # Thống kê
             self.stats["packets_processed"] += 1
@@ -388,8 +421,43 @@ class IDSEngine:
         
         # Start sniffing thread
         def start_sniffing():
-            ifaces = [i.strip() for i in str(self.iface).split(',') if i.strip()]
+            iface = str(self.iface).strip()
+            
+            # Handle NFLOG interface (captures BEFORE DNAT)
+            if iface.startswith('nflog'):
+                if not NFLOG_AVAILABLE:
+                    print(f"[!] NFLOG not available (scapy.arch.linux not found)")
+                    print(f"[!] Falling back to ens33 (will capture AFTER DNAT)")
+                    iface = 'ens33'
+                else:
+                    try:
+                        # Extract group number from "nflog:1"
+                        group_num = int(iface.split(':')[1]) if ':' in iface else 1
+                        print(f"[*] Using NFLOG group {group_num} (capturing BEFORE DNAT)")
+                        
+                        # Create NFLOG listener socket
+                        sock = nflog_listener(group_num)
+                        
+                        # Sniff from NFLOG queue
+                        sniff(opened_socket=sock, 
+                              prn=self._packet_cb, 
+                              store=False,
+                              stop_filter=lambda x: not self.running)
+                        return
+                    except Exception as e:
+                        print(f"[!] NFLOG initialization failed: {e}")
+                        print(f"[!] Make sure to run: sudo modprobe nfnetlink_log")
+                        print(f"[!] And setup iptables: sudo iptables -t raw -A PREROUTING -i ens33 -j NFLOG --nflog-group 1")
+                        print(f"[!] Falling back to ens33")
+                        iface = 'ens33'
+            
+            # Standard interface sniffing (AFTER DNAT for nat table)
+            ifaces = [i.strip() for i in iface.split(',') if i.strip()]
             iface_arg = ifaces if len(ifaces) > 1 else (ifaces[0] if ifaces else None)
+            
+            capture_point = "AFTER DNAT" if iface_arg == 'ens33' else "interface"
+            print(f"[*] Sniffing on {iface_arg} (capturing {capture_point})")
+            
             sniff(iface=iface_arg, prn=self._packet_cb, store=False, 
                   stop_filter=lambda x: not self.running)
         
@@ -400,6 +468,8 @@ class IDSEngine:
         print(f"    Interface: {self.iface}")
         print(f"    Window: {self.window}s")
         print(f"    Threshold: {self.alert_threshold}")
+        print(f"    Monitoring IPs: {self.local_ips if self.local_ips else 'ALL'}")
+        print(f"    Ignore HTTPS: {self.ignore_https}")
         return True
     
     def stop(self):

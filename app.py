@@ -8,8 +8,7 @@ import time
 import threading
 import configparser
 import logging
-from flask import Flask, render_template, jsonify, request, redirect, url_for, Response, session
-from functools import wraps
+from flask import Flask, render_template, jsonify, request, Response
 from datetime import datetime
 
 # Import modules
@@ -23,9 +22,7 @@ config.read('config.ini', encoding='utf-8')  # Use GLOBAL_CONFIG for initial val
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # Secret key cho session
 
-# Lấy thông tin đăng nhập từ config
-USERNAME = config.get('WebUI', 'username', fallback='admin')
-PASSWORD = config.get('WebUI', 'password', fallback='admin123')
+# Lấy cấu hình WebUI
 PORT = config.getint('WebUI', 'port', fallback=5000)
 SUPPRESS_ACCESS_LOG = config.getboolean('WebUI', 'suppress_access_log', fallback=True)
 
@@ -64,15 +61,6 @@ def forward_alerts():
 alert_thread = threading.Thread(target=forward_alerts)
 alert_thread.daemon = True
 alert_thread.start()
-
-# Yêu cầu đăng nhập
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'logged_in' not in session:
-            return redirect(url_for('login', next=request.url))
-        return f(*args, **kwargs)
-    return decorated_function
 
 # Routes
 @app.route('/')
