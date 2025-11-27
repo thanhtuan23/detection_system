@@ -96,6 +96,12 @@ class IDSEngine:
         # Bộ nhớ cho host count features
         self.host_events = deque(maxlen=100000)
         
+        # ===== FLOOD DETECTION (Simple, no config needed) =====
+        # Theo dõi packets per source IP trong 1 giây
+        self.flood_tracker = defaultdict(lambda: deque(maxlen=1000))  # {src_ip: [timestamp, ...]}
+        self.flood_threshold = 500  # packets/giây = FLOOD
+        self.flood_cooldown = {}  # {src_ip: last_alert_time} - tránh spam alerts
+        
         # Thống kê
         self.stats = {
             "packets_processed": 0,
@@ -277,11 +283,49 @@ class IDSEngine:
                     if pkt[UDP].dport == 443 or pkt[UDP].sport == 443:
                         return
             
+            # ===== FLOOD DETECTION (Simple Real-time) =====
+            src_ip = pkt[IP].src
+            now = time.time()
+            
+            # Track packets từ source IP này
+            self.flood_tracker[src_ip].append(now)
+            
+            # Đếm packets trong 1 giây gần nhất
+            one_sec_ago = now - 1.0
+            recent_packets = [ts for ts in self.flood_tracker[src_ip] if ts >= one_sec_ago]
+            
+            # Nếu > threshold packets/giây → FLOOD ATTACK
+            if len(recent_packets) >= self.flood_threshold:
+                # Check cooldown (tránh spam alerts)
+                last_alert = self.flood_cooldown.get(src_ip, 0)
+                if now - last_alert >= 3:  # Alert mỗi 5 giây
+                    self.flood_cooldown[src_ip] = now
+                    
+                    # Tạo alert ngay lập tức
+                    alert = {
+                        "timestamp": datetime.now().isoformat(),
+                        "type": "attack",
+                        "src_ip": src_ip,
+                        "src_port": 0,
+                        "dst_ip": dst_ip,
+                        "dst_port": 0,
+                        "probability": 1.0,  # 100% chắc chắn (rule-based)
+                        "packets": len(recent_packets),
+                        "bytes": 0,
+                        "message": f"FLOOD ATTACK detected: {src_ip} → {dst_ip} ({len(recent_packets)} packets/sec)"
+                    }
+                    
+                    self.attack_logger.info(alert["message"])
+                    self.alert_queue.put(alert)
+                    self.recent_alerts.append(alert)
+                    self.stats["alerts_generated"] += 1
+                    
+                    print(f"[!] FLOOD: {src_ip} → {dst_ip} ({len(recent_packets)} pkt/s)")
+            
             # Thống kê
             self.stats["packets_processed"] += 1
             self.stats["bytes_processed"] += len(pkt)
             
-            now = time.time()
             if now - self.stats["last_update_time"] >= 1:
                 if self.stats["start_time"]:
                     self.stats["packets_per_second"] = int(
