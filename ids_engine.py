@@ -97,10 +97,17 @@ class IDSEngine:
         self.host_events = deque(maxlen=100000)
         
         # ===== FLOOD DETECTION (Simple, no config needed) =====
-        # Theo dõi packets per source IP trong 1 giây
-        self.flood_tracker = defaultdict(lambda: deque(maxlen=1000))  # {src_ip: [timestamp, ...]}
-        self.flood_threshold = 500  # packets/giây = FLOOD
-        self.flood_cooldown = {}  # {src_ip: last_alert_time} - tránh spam alerts
+        # Theo dõi packets per FLOW (src_ip:src_port)
+        self.flood_tracker = defaultdict(lambda: deque(maxlen=1000))  # {flow_id: [timestamp, ...]}
+        self.flood_threshold = 100  # packets/giây per flow = FLOOD
+        self.flood_cooldown = {}  # {flow_id: last_alert_time} - tránh spam alerts
+        
+        # ===== DISTRIBUTED FLOOD DETECTION (cho hping3 --rand-source) =====
+        # Theo dõi packets tới từng destination
+        self.dst_tracker = defaultdict(lambda: deque(maxlen=5000))  # {dst_ip:dst_port: [(timestamp, src_ip), ...]}
+        self.dst_flood_threshold = 200  # packets/giây tới 1 destination = Distributed Flood
+        self.dst_unique_src_threshold = 10  # Số lượng source IPs khác nhau tối thiểu
+        self.dst_flood_cooldown = {}  # {dst_ip:dst_port: last_alert_time}
         
         # Thống kê
         self.stats = {
@@ -287,32 +294,43 @@ class IDSEngine:
             src_ip = pkt[IP].src
             now = time.time()
             
-            # Track packets từ source IP này
-            self.flood_tracker[src_ip].append(now)
+            # Lấy source port và dest port
+            src_port = 0
+            dst_port = 0
+            if pkt.haslayer(TCP):
+                src_port = pkt[TCP].sport
+                dst_port = pkt[TCP].dport
+            elif pkt.haslayer(UDP):
+                src_port = pkt[UDP].sport
+                dst_port = pkt[UDP].dport
+            
+            # Track packets theo FLOW (src_ip:src_port)
+            flow_id = f"{src_ip}:{src_port}"
+            self.flood_tracker[flow_id].append(now)
             
             # Đếm packets trong 1 giây gần nhất
             one_sec_ago = now - 1.0
-            recent_packets = [ts for ts in self.flood_tracker[src_ip] if ts >= one_sec_ago]
+            recent_packets = [ts for ts in self.flood_tracker[flow_id] if ts >= one_sec_ago]
             
             # Nếu > threshold packets/giây → FLOOD ATTACK
             if len(recent_packets) >= self.flood_threshold:
                 # Check cooldown (tránh spam alerts)
-                last_alert = self.flood_cooldown.get(src_ip, 0)
-                if now - last_alert >= 3:  # Alert mỗi 5 giây
-                    self.flood_cooldown[src_ip] = now
+                last_alert = self.flood_cooldown.get(flow_id, 0)
+                if now - last_alert >= 0.1:  # Alert mỗi 0.1 giây
+                    self.flood_cooldown[flow_id] = now
                     
                     # Tạo alert ngay lập tức
                     alert = {
                         "timestamp": datetime.now().isoformat(),
                         "type": "attack",
                         "src_ip": src_ip,
-                        "src_port": 0,
+                        "src_port": src_port,
                         "dst_ip": dst_ip,
-                        "dst_port": 0,
+                        "dst_port": dst_port,
                         "probability": 1.0,  # 100% chắc chắn (rule-based)
                         "packets": len(recent_packets),
                         "bytes": 0,
-                        "message": f"FLOOD ATTACK detected: {src_ip} → {dst_ip} ({len(recent_packets)} packets/sec)"
+                        "message": f"FLOOD ATTACK: {src_ip}:{src_port} → {dst_ip}:{dst_port} ({len(recent_packets)} pkt/s)"
                     }
                     
                     self.attack_logger.info(alert["message"])
@@ -320,7 +338,43 @@ class IDSEngine:
                     self.recent_alerts.append(alert)
                     self.stats["alerts_generated"] += 1
                     
-                    print(f"[!] FLOOD: {src_ip} → {dst_ip} ({len(recent_packets)} pkt/s)")
+                    print(f"[!] FLOOD: {src_ip}:{src_port} → {dst_ip}:{dst_port} ({len(recent_packets)} pkt/s)")
+            
+            # ===== DISTRIBUTED FLOOD DETECTION (hping3 --rand-source) =====
+            # Track packets tới destination (để phát hiện nhiều IPs tấn công cùng 1 đích)
+            dst_key = f"{dst_ip}:{dst_port}"
+            self.dst_tracker[dst_key].append((now, src_ip))
+            
+            # Đếm packets và unique source IPs trong 1 giây gần nhất
+            recent_dst_packets = [(ts, ip) for ts, ip in self.dst_tracker[dst_key] if ts >= one_sec_ago]
+            unique_src_ips = set(ip for ts, ip in recent_dst_packets)
+            
+            # Nếu có nhiều IPs khác nhau tấn công cùng 1 đích với rate cao → Distributed Flood
+            if len(recent_dst_packets) >= self.dst_flood_threshold and len(unique_src_ips) >= self.dst_unique_src_threshold:
+                last_dst_alert = self.dst_flood_cooldown.get(dst_key, 0)
+                if now - last_dst_alert >= 1.0:  # Alert mỗi 1 giây cho distributed flood
+                    self.dst_flood_cooldown[dst_key] = now
+                    
+                    # Tạo alert cho Distributed Flood
+                    dist_alert = {
+                        "timestamp": datetime.now().isoformat(),
+                        "type": "attack",
+                        "src_ip": f"{len(unique_src_ips)} sources",
+                        "src_port": 0,
+                        "dst_ip": dst_ip,
+                        "dst_port": dst_port,
+                        "probability": 1.0,
+                        "packets": len(recent_dst_packets),
+                        "bytes": 0,
+                        "message": f"DISTRIBUTED FLOOD: {len(unique_src_ips)} IPs → {dst_ip}:{dst_port} ({len(recent_dst_packets)} pkt/s)"
+                    }
+                    
+                    self.attack_logger.info(dist_alert["message"])
+                    self.alert_queue.put(dist_alert)
+                    self.recent_alerts.append(dist_alert)
+                    self.stats["alerts_generated"] += 1
+                    
+                    print(f"[!] DISTRIBUTED FLOOD: {len(unique_src_ips)} IPs → {dst_ip}:{dst_port} ({len(recent_dst_packets)} pkt/s)")
             
             # Thống kê
             self.stats["packets_processed"] += 1
