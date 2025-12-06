@@ -14,6 +14,13 @@ document.addEventListener('DOMContentLoaded', function() {
     const alertsGenerated = document.getElementById('alerts-generated');
     const alertsTable = document.getElementById('alerts-table');
     
+    // System metrics elements
+    const cpuUsage = document.getElementById('cpu-usage');
+    const cpuBar = document.getElementById('cpu-bar');
+    const memUsage = document.getElementById('mem-usage');
+    const memBar = document.getElementById('mem-bar');
+    const connectionsCount = document.getElementById('connections-count');
+    
     // Format numbers with commas
     function formatNumber(num) {
         return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
@@ -44,6 +51,63 @@ document.addEventListener('DOMContentLoaded', function() {
         result += secs + 's';
         
         return result;
+    }
+    
+    // Update system metrics (CPU, RAM, Network)
+    function updateSystemMetrics() {
+        fetch('/api/system-metrics')
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    console.error('System metrics error:', data.error);
+                    return;
+                }
+                
+                // Update CPU
+                const cpu = data.cpu.percent.toFixed(1);
+                cpuUsage.textContent = cpu + '%';
+                cpuBar.style.width = cpu + '%';
+                cpuBar.textContent = cpu + '%';
+                
+                // CPU color based on load
+                if (cpu > 80) {
+                    cpuBar.className = 'progress-bar bg-danger';
+                } else if (cpu > 50) {
+                    cpuBar.className = 'progress-bar bg-warning';
+                } else {
+                    cpuBar.className = 'progress-bar bg-success';
+                }
+                
+                // Update Memory
+                const mem = data.memory.percent.toFixed(1);
+                memUsage.textContent = mem + '%';
+                memBar.style.width = mem + '%';
+                memBar.textContent = mem + '%';
+                
+                // Memory color based on usage
+                if (mem > 80) {
+                    memBar.className = 'progress-bar bg-danger';
+                } else if (mem > 50) {
+                    memBar.className = 'progress-bar bg-warning';
+                } else {
+                    memBar.className = 'progress-bar bg-success';
+                }
+                
+                // Update connections count
+                const connTotal = data.connections.total;
+                const connEst = data.connections.established;
+                connectionsCount.textContent = `${formatNumber(connEst)} / ${formatNumber(connTotal)}`;
+                
+                // Highlight if too many connections (potential DOS)
+                if (connEst > 500) {
+                    connectionsCount.className = 'text-danger fw-bold';
+                } else if (connEst > 100) {
+                    connectionsCount.className = 'text-warning fw-bold';
+                } else {
+                    connectionsCount.className = 'text-primary';
+                }
+            })
+            .catch(error => console.error('Error fetching system metrics:', error));
     }
     
     // Update stats every second
@@ -165,10 +229,14 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initial update
     updateStats();
     updateAlerts();
+    updateSystemMetrics();
     
     // Update stats every second
     setInterval(updateStats, 1000);
     
     // Update alerts every 5 seconds
     setInterval(updateAlerts, 5000);
+    
+    // Update system metrics every 2 seconds
+    setInterval(updateSystemMetrics, 2000);
 });

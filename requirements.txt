@@ -6,3 +6,5 @@ scapy
 joblib
 scikit-learn==1.6.1
 requests
+matplotlib
+psutil

@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Simplified IDS Engine - AI-Only Attack Detection
-=================================================
 
 Luồng hoạt động:
 1. Thu thập gói tin realtime (sniff)
@@ -11,12 +9,6 @@ Luồng hoạt động:
 4. Dự đoán bằng AI model (ML/DL)
 5. Gửi cảnh báo qua Email/Telegram
 
-ĐÃ BỎ:
-- Flood detection (SYN/UDP/ICMP)
-- Port scan detection  
-- Rule-based heuristics
-
-CHỈ CÒN: AI model → ATTACK detection
 """
 
 import os
@@ -33,13 +25,6 @@ import pandas as pd
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 from scapy.all import sniff, IP, TCP, UDP
-
-# NFLOG support for capturing packets BEFORE DNAT
-try:
-    from scapy.arch.linux import nflog_listener
-    NFLOG_AVAILABLE = True
-except ImportError:
-    NFLOG_AVAILABLE = False
 
 # Internal modules
 from logging_utils import setup_logging
@@ -96,7 +81,7 @@ class IDSEngine:
         # Bộ nhớ cho host count features
         self.host_events = deque(maxlen=100000)
         
-        # ===== FLOOD DETECTION (Simple, no config needed) =====
+        # ===== FLOOD DETECTION =====
         # Theo dõi packets per FLOW (src_ip:src_port)
         self.flood_tracker = defaultdict(lambda: deque(maxlen=1000))  # {flow_id: [timestamp, ...]}
         self.flood_threshold = 100  # packets/giây per flow = FLOOD
@@ -105,7 +90,7 @@ class IDSEngine:
         # ===== DISTRIBUTED FLOOD DETECTION (cho hping3 --rand-source) =====
         # Theo dõi packets tới từng destination
         self.dst_tracker = defaultdict(lambda: deque(maxlen=5000))  # {dst_ip:dst_port: [(timestamp, src_ip), ...]}
-        self.dst_flood_threshold = 200  # packets/giây tới 1 destination = Distributed Flood
+        self.dst_flood_threshold = 1000  # packets/giây tới 1 destination = Distributed Flood
         self.dst_unique_src_threshold = 10  # Số lượng source IPs khác nhau tối thiểu
         self.dst_flood_cooldown = {}  # {dst_ip:dst_port: last_alert_time}
         
@@ -275,8 +260,6 @@ class IDSEngine:
             if not pkt.haslayer(IP):
                 return
             
-            # Filter: CHỈ phân tích traffic tới server (destination = local_ips)
-            # Bỏ qua traffic từ server ra ngoài hoặc traffic không liên quan
             dst_ip = pkt[IP].dst
             if self.local_ips and dst_ip not in self.local_ips:
                 return  # Bỏ qua traffic không tới server
@@ -290,7 +273,7 @@ class IDSEngine:
                     if pkt[UDP].dport == 443 or pkt[UDP].sport == 443:
                         return
             
-            # ===== FLOOD DETECTION (Simple Real-time) =====
+            # ===== FLOOD DETECTION  =====
             src_ip = pkt[IP].src
             now = time.time()
             
@@ -339,42 +322,6 @@ class IDSEngine:
                     self.stats["alerts_generated"] += 1
                     
                     print(f"[!] FLOOD: {src_ip}:{src_port} → {dst_ip}:{dst_port} ({len(recent_packets)} pkt/s)")
-            
-            # ===== DISTRIBUTED FLOOD DETECTION (hping3 --rand-source) =====
-            # Track packets tới destination (để phát hiện nhiều IPs tấn công cùng 1 đích)
-            dst_key = f"{dst_ip}:{dst_port}"
-            self.dst_tracker[dst_key].append((now, src_ip))
-            
-            # Đếm packets và unique source IPs trong 1 giây gần nhất
-            recent_dst_packets = [(ts, ip) for ts, ip in self.dst_tracker[dst_key] if ts >= one_sec_ago]
-            unique_src_ips = set(ip for ts, ip in recent_dst_packets)
-            
-            # Nếu có nhiều IPs khác nhau tấn công cùng 1 đích với rate cao → Distributed Flood
-            if len(recent_dst_packets) >= self.dst_flood_threshold and len(unique_src_ips) >= self.dst_unique_src_threshold:
-                last_dst_alert = self.dst_flood_cooldown.get(dst_key, 0)
-                if now - last_dst_alert >= 1.0:  # Alert mỗi 1 giây cho distributed flood
-                    self.dst_flood_cooldown[dst_key] = now
-                    
-                    # Tạo alert cho Distributed Flood
-                    dist_alert = {
-                        "timestamp": datetime.now().isoformat(),
-                        "type": "attack",
-                        "src_ip": f"{len(unique_src_ips)} sources",
-                        "src_port": 0,
-                        "dst_ip": dst_ip,
-                        "dst_port": dst_port,
-                        "probability": 1.0,
-                        "packets": len(recent_dst_packets),
-                        "bytes": 0,
-                        "message": f"DISTRIBUTED FLOOD: {len(unique_src_ips)} IPs → {dst_ip}:{dst_port} ({len(recent_dst_packets)} pkt/s)"
-                    }
-                    
-                    self.attack_logger.info(dist_alert["message"])
-                    self.alert_queue.put(dist_alert)
-                    self.recent_alerts.append(dist_alert)
-                    self.stats["alerts_generated"] += 1
-                    
-                    print(f"[!] DISTRIBUTED FLOOD: {len(unique_src_ips)} IPs → {dst_ip}:{dst_port} ({len(recent_dst_packets)} pkt/s)")
             
             # Thống kê
             self.stats["packets_processed"] += 1
@@ -520,41 +467,10 @@ class IDSEngine:
         # Start sniffing thread
         def start_sniffing():
             iface = str(self.iface).strip()
-            
-            # Handle NFLOG interface (captures BEFORE DNAT)
-            if iface.startswith('nflog'):
-                if not NFLOG_AVAILABLE:
-                    print(f"[!] NFLOG not available (scapy.arch.linux not found)")
-                    print(f"[!] Falling back to ens33 (will capture AFTER DNAT)")
-                    iface = 'ens33'
-                else:
-                    try:
-                        # Extract group number from "nflog:1"
-                        group_num = int(iface.split(':')[1]) if ':' in iface else 1
-                        print(f"[*] Using NFLOG group {group_num} (capturing BEFORE DNAT)")
-                        
-                        # Create NFLOG listener socket
-                        sock = nflog_listener(group_num)
-                        
-                        # Sniff from NFLOG queue
-                        sniff(opened_socket=sock, 
-                              prn=self._packet_cb, 
-                              store=False,
-                              stop_filter=lambda x: not self.running)
-                        return
-                    except Exception as e:
-                        print(f"[!] NFLOG initialization failed: {e}")
-                        print(f"[!] Make sure to run: sudo modprobe nfnetlink_log")
-                        print(f"[!] And setup iptables: sudo iptables -t raw -A PREROUTING -i ens33 -j NFLOG --nflog-group 1")
-                        print(f"[!] Falling back to ens33")
-                        iface = 'ens33'
-            
-            # Standard interface sniffing (AFTER DNAT for nat table)
             ifaces = [i.strip() for i in iface.split(',') if i.strip()]
             iface_arg = ifaces if len(ifaces) > 1 else (ifaces[0] if ifaces else None)
             
-            capture_point = "AFTER DNAT" if iface_arg == 'ens33' else "interface"
-            print(f"[*] Sniffing on {iface_arg} (capturing {capture_point})")
+            print(f"[*] Sniffing on {iface_arg}")
             
             sniff(iface=iface_arg, prn=self._packet_cb, store=False, 
                   stop_filter=lambda x: not self.running)

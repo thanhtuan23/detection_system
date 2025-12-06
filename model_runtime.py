@@ -7,11 +7,6 @@ import sys
 
 class ReducedPreprocessorWrapper:
     """Wrapper cắt giảm số cột sau transform.
-
-    Kỳ vọng các thuộc tính có thể đã được pickle:
-        - base: ColumnTransformer gốc
-        - selected_indices hoặc selected_indices_sorted: danh sách/array chỉ số giữ lại
-        - (tùy chọn) full_order_desc, importances_full, importances_full_desc
     """
     def __init__(self, base_preprocessor=None, selected_indices=None, selected_indices_sorted=None, *args, **kwargs):
         self.base = base_preprocessor
@@ -52,12 +47,6 @@ if _main_mod is not None and not hasattr(_main_mod, 'ReducedPreprocessorWrapper'
 
 
 def load_model_and_preprocess(preprocess_path: str, model_path: str):
-    """
-    Load pipeline (.pkl) và mô hình (DL .h5 Keras hoặc ML .pkl sklearn) dựa vào metrics_summary.json nếu có.
-    - Hỗ trợ cả khi model_path trỏ trực tiếp đến file (.h5 hoặc .pkl) hoặc chỉ là một file bất kỳ trong thư mục models/.
-    Trả về: (preprocess, model, model_type: 'ml'|'dl', info dict)
-    info = { 'path': str, 'winner_type': str|None, 'best_ml_name': str|None }
-    """
     if not os.path.exists(preprocess_path):
         raise FileNotFoundError(f"Preprocess file not found: {preprocess_path}")
     preprocess = joblib.load(preprocess_path)
@@ -118,7 +107,7 @@ def load_model_and_preprocess(preprocess_path: str, model_path: str):
 
 
 def predict_probabilities(model, model_type: str, X) -> np.ndarray:
-    """Trả về xác suất tấn công (lớp 1) cho cả Keras (DL) và sklearn (ML)."""
+    """Trả về xác suất tấn công cho cả Keras (DL) và sklearn (ML)."""
     import numpy as _np
     if model_type == 'dl':
         # Keras cần dense float32

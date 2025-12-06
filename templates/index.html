@@ -37,7 +37,7 @@
 
     <div class="container mt-4">
         <div class="row mb-4">
-            <div class="col-md-6">
+            <div class="col-md-4">
                 <div class="card">
                     <div class="card-header bg-primary text-white">
                         <h5 class="mb-0">Trạng thái IDS</h5>
@@ -54,7 +54,7 @@
                     </div>
                 </div>
             </div>
-            <div class="col-md-6">
+            <div class="col-md-4">
                 <div class="card">
                     <div class="card-header bg-info text-white">
                         <h5 class="mb-0">Thống kê mạng</h5>
@@ -71,6 +71,26 @@
                                 <p><strong>Cảnh báo sinh ra:</strong> <span id="alerts-generated">0</span></p>
                             </div>
                         </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card">
+                    <div class="card-header bg-warning text-dark">
+                        <h5 class="mb-0">Tài nguyên hệ thống</h5>
+                    </div>
+                    <div class="card-body">
+                        <p><strong>CPU:</strong> <span id="cpu-usage" class="text-danger">0%</span></p>
+                        <div class="progress mb-3" style="height: 20px;">
+                            <div id="cpu-bar" class="progress-bar" role="progressbar" style="width: 0%">0%</div>
+                        </div>
+                        
+                        <p><strong>RAM:</strong> <span id="mem-usage" class="text-danger">0%</span></p>
+                        <div class="progress mb-3" style="height: 20px;">
+                            <div id="mem-bar" class="progress-bar bg-success" role="progressbar" style="width: 0%">0%</div>
+                        </div>
+                        
+                        <p><strong>Kết nối mạng:</strong> <span id="connections-count" class="text-primary">0</span></p>
                     </div>
                 </div>
             </div>

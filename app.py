@@ -8,6 +8,7 @@ import time
 import threading
 import configparser
 import logging
+import psutil
 from flask import Flask, render_template, jsonify, request, Response
 from datetime import datetime
 
@@ -119,6 +120,60 @@ def stop_ids():
 @app.route('/api/stats')
 def get_stats():
     return jsonify(ids.get_stats())
+
+@app.route('/api/system-metrics')
+def get_system_metrics():
+    """Lấy thông tin tài nguyên hệ thống (CPU, RAM, Network)"""
+    try:
+        # CPU usage
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        cpu_count = psutil.cpu_count()
+        
+        # Memory usage
+        mem = psutil.virtual_memory()
+        mem_total = mem.total
+        mem_used = mem.used
+        mem_percent = mem.percent
+        
+        # Network I/O
+        net_io = psutil.net_io_counters()
+        bytes_sent = net_io.bytes_sent
+        bytes_recv = net_io.bytes_recv
+        packets_sent = net_io.packets_sent
+        packets_recv = net_io.packets_recv
+        
+        # Network connections count (listening + established)
+        try:
+            connections = psutil.net_connections(kind='inet')
+            conn_count = len(connections)
+            established_count = sum(1 for c in connections if c.status == 'ESTABLISHED')
+        except (PermissionError, psutil.AccessDenied):
+            conn_count = 0
+            established_count = 0
+        
+        return jsonify({
+            'cpu': {
+                'percent': cpu_percent,
+                'count': cpu_count
+            },
+            'memory': {
+                'total': mem_total,
+                'used': mem_used,
+                'percent': mem_percent
+            },
+            'network': {
+                'bytes_sent': bytes_sent,
+                'bytes_recv': bytes_recv,
+                'packets_sent': packets_sent,
+                'packets_recv': packets_recv
+            },
+            'connections': {
+                'total': conn_count,
+                'established': established_count
+            }
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/alerts')
 def get_alerts():
