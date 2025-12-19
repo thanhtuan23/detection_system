@@ -87,12 +87,9 @@ class IDSEngine:
         self.flood_threshold = 100  # packets/giây per flow = FLOOD
         self.flood_cooldown = {}  # {flow_id: last_alert_time} - tránh spam alerts
         
-        # ===== DISTRIBUTED FLOOD DETECTION (cho hping3 --rand-source) =====
-        # Theo dõi packets tới từng destination
-        self.dst_tracker = defaultdict(lambda: deque(maxlen=5000))  # {dst_ip:dst_port: [(timestamp, src_ip), ...]}
-        self.dst_flood_threshold = 1000  # packets/giây tới 1 destination = Distributed Flood
-        self.dst_unique_src_threshold = 10  # Số lượng source IPs khác nhau tối thiểu
-        self.dst_flood_cooldown = {}  # {dst_ip:dst_port: last_alert_time}
+        # Theo dõi số lần ping (ICMP) từ mỗi IP - SAFE RULE: < 10 ping = an toàn
+        self.icmp_counter = defaultdict(int)  # {src_ip: total_ping_count}
+        self.icmp_safe_threshold = 10  # < 10 ping = an toàn, không cảnh báo
         
         # Thống kê
         self.stats = {
@@ -142,7 +139,7 @@ class IDSEngine:
                         self.blacklist_ips.add(line)
     
     def _is_whitelisted(self, ip: str) -> bool:
-        """Check if IP is in whitelist (supports wildcards and CIDR-like patterns)"""
+        """Check if IP is in whitelist"""
         for pattern in self.whitelist_ips:
             # Exact match
             if ip == pattern:
@@ -164,7 +161,7 @@ class IDSEngine:
         return False
     
     def _is_blacklisted(self, ip: str) -> bool:
-        """Check if IP is in blacklist (supports wildcards and CIDR-like patterns)"""
+        """Check if IP is in blacklist"""
         for pattern in self.blacklist_ips:
             # Exact match
             if ip == pattern:
@@ -286,6 +283,31 @@ class IDSEngine:
             elif pkt.haslayer(UDP):
                 src_port = pkt[UDP].sport
                 dst_port = pkt[UDP].dport
+            
+            # ===== ICMP SAFE RULE: < 10 ping = an toàn =====
+            from scapy.all import ICMP
+            is_icmp_echo = False
+            if pkt.haslayer(ICMP):
+                if pkt[ICMP].type == 8:  # Echo Request (ping)
+                    is_icmp_echo = True
+                    self.icmp_counter[src_ip] += 1
+                    
+                    # Nếu < ngưỡng an toàn, bỏ qua flood detection cho ICMP này
+                    if self.icmp_counter[src_ip] < self.icmp_safe_threshold:
+                        # Vẫn update flow state nhưng không kiểm tra flood
+                        key = self._flow_key(pkt)
+                        with self.lock:
+                            if key not in self.flows:
+                                self.flows[key] = FlowState(proto_name(pkt), guess_service(pkt))
+                            state = self.flows[key]
+                            direction = self._direction_src_to_dst(pkt, key)
+                            state.update(pkt, direction)
+                            self._update_host_window(pkt)
+                        
+                        # Thống kê
+                        self.stats["packets_processed"] += 1
+                        self.stats["bytes_processed"] += len(pkt)
+                        return  # Bỏ qua flood detection
             
             # Track packets theo FLOW (src_ip:src_port)
             flow_id = f"{src_ip}:{src_port}"
